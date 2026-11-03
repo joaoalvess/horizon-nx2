@@ -2126,7 +2126,7 @@ static uint8_t *vpool_reserve(pool_t *o) {   // → the reserved range, or NULL
     v->pool = o; v->base = a; v->len = len; v->size = o->size;
     pthread_mutex_lock(&g_vp_mu);
     if (g_nvp == g_cvp && !(g_vp = realloc(g_vp, (g_cvp = g_cvp ? 2 * g_cvp : 64) * sizeof *g_vp))) die("sparse pool table allocation failed");
-    g_vp[g_nvp++] = v; o->vp = v;
+    g_vp[g_nvp] = v; __atomic_store_n(&g_nvp, g_nvp + 1, __ATOMIC_RELEASE); o->vp = v;
     o->vmode = o->size > DM_GAME_APP_POOL ? 2 : 0;
     pthread_mutex_unlock(&g_vp_mu);
     if (o->vmode == 2) LOG("[nvn] virtual pool %p (%#llx bytes, flags %#x): sparse, own address range %p+%#llx, physical pages are remapped into it", (const void *)o, (unsigned long long)o->size, o->flags, a, (unsigned long long)len);
@@ -2137,7 +2137,7 @@ static void vpool_drop(pool_t *o) {   // caller holds g_vp_mu
     for (int k = 0; k < v->nrun; k++) mtl_pool_del(v->base + v->run[k].lo);
     munmap(v->base, v->len);
     for (uint64_t l = 0; l < (v->size + (2u << 20) - 1) >> 21; l++) free(v->pt[l]);
-    for (int i = 0; i < g_nvp; i++) if (g_vp[i] == v) { g_vp[i] = g_vp[--g_nvp]; break; }
+    for (int i = 0; i < g_nvp; i++) if (g_vp[i] == v) { g_vp[i] = g_vp[g_nvp - 1]; __atomic_store_n(&g_nvp, g_nvp - 1, __ATOMIC_RELEASE); break; }
     free(v->pt); free(v); o->vp = NULL;
 }
 static void vpool_release(pool_t *o) { pthread_mutex_lock(&g_vp_mu); vpool_drop(o); pthread_mutex_unlock(&g_vp_mu); }
@@ -2615,7 +2615,7 @@ int nvn_host_readable(uint64_t a, uint64_t n) {
 // Sparse virtual addresses alias physical pools, so guest ranges alone cannot
 // prove copy independence.
 int nvn_sparse_alias(uint64_t lo, uint64_t hi) {
-    if (hi <= lo) return 0;
+    if (hi <= lo || !__atomic_load_n(&g_nvp, __ATOMIC_ACQUIRE)) return 0;
     int r = 0; pthread_mutex_lock(&g_vp_mu);
     for (int k = 0; k < g_nvp && !r; k++) { const struct vpool *v = g_vp[k];
         uint64_t base = (uint64_t)(uintptr_t)v->base;
