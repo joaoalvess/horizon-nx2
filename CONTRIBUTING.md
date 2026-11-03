@@ -1,6 +1,6 @@
 # Contributing
 
-Issues and pull requests are welcome. This page says how a change gets in; what the code does and where things are is in [AGENTS.md](AGENTS.md) and [docs/development.md](docs/development.md).
+Issues and pull requests are welcome. This page says how a change gets in; what the code does and where things are is in [CLAUDE.md](CLAUDE.md) and [docs/development.md](docs/development.md).
 
 ## Reporting a problem
 
@@ -10,14 +10,14 @@ Open an issue with the bug report form. It asks for what a problem is traced wit
 
 ## Never game files or keys
 
-Never commit or attach game files, keys, title keys or anything extracted from a game: RomFS, code modules, shaders, dumps. Game files and their extractions stay in the game's NSP folder ([AGENTS.md](AGENTS.md)). Logs, screenshots, title IDs, build IDs and offsets are fine.
+Never commit or attach game files, keys, title keys or anything extracted from a game: RomFS, code modules, shaders, dumps. Game files and their extractions stay in the game's NSP folder ([CLAUDE.md](CLAUDE.md)). Logs, screenshots, title IDs, build IDs and offsets are fine.
 
 ## Before you start
 
-- Read [AGENTS.md](AGENTS.md): it lists where to start for each kind of task, and the rules for profiles, per-build knowledge and the shader translation chain.
+- Read [CLAUDE.md](CLAUDE.md): it lists where to start for each kind of task, and the rules for profiles, per-build knowledge and the shader translation chain.
 - A crash, a hang or a wrong picture: search the [symptom index](docs/agents/symptoms.md) for the text in the log first.
 - Another game: run `scripts/build_ipa_from_nsp.py` on its NSP folder and follow [Port another game](docs/development.md#port-another-game).
-- Prefer a fix that holds for every game to a game-specific rule, and fix a bug at its cause ([AGENTS.md](AGENTS.md)).
+- Prefer a fix that holds for every game to a game-specific rule, and fix a bug at its cause ([CLAUDE.md](CLAUDE.md)).
 
 ## A pull request
 

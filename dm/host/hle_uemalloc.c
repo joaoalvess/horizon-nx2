@@ -21,7 +21,7 @@
 // Unreal Engine 3 (Batman: Arkham Knight, with a backported binned allocator) takes UE3's 32-bit sizes (DWORD Count / Alignment) and has no TryMalloc / TryRealloc: 0-1 destructors, 2 Exec,
 // 3 QuantizeSize, 4 Malloc, 5 Realloc, 6 Free (call sites by vtable offset: 4 / 5 / 6 at 8090 / 8423 / 20308; malloc main+0xb2e3d0 calls +0x20 with alignment 16), 13 the TLS cache flush,
 // 14 IsInternallyThreadSafe (1), 20 GetAllocationSize (stores a 32-bit size), 21 the TLS cache setup, 22 Trim (main+0x329a408). Its object is in the bss and its constructor is inlined into
-// the GMalloc setup, which the cut skips (the game's patches.py). It has no Binned3 name to find, so it keeps a row of fixed addresses, which runs only on the main build it was found in (AGENTS.md)
+// the GMalloc setup, which the cut skips (the game's patches.py). It has no Binned3 name to find, so it keeps a row of fixed addresses, which runs only on the main build it was found in (CLAUDE.md)
 #include "hle.h"
 #include <malloc/malloc.h>
 #include <mach/mach.h>

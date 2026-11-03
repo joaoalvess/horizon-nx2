@@ -4,7 +4,7 @@ Every piece of code that runs for one game and not the others: the rewriter's pa
 
 ## Binding
 
-A patch's binding is what its correctness is anchored to, from the loosest. A patch is good design when its binding is the loosest that is correct (AGENTS.md prefers general fixes); the rules are in GitHub issue #635.
+A patch's binding is what its correctness is anchored to, from the loosest. A patch is good design when its binding is the loosest that is correct (CLAUDE.md prefers general fixes); the rules are in GitHub issue #635.
 
 | Binding | Anchored to | Found by | Survives |
 |---|---|---|---|
