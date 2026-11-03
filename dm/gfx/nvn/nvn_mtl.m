@@ -12801,19 +12801,23 @@ extern _Atomic uint64_t dm_present_ns;   // hle_thread.c (DM_HITCH_DUMP); the NV
 // With Metal encoding on its own thread (DM_NVN_ENC_THREAD) the copy is a block of the encode thread's queue (rec_own_push): it runs behind everything the game submitted before
 // the present, the presenting thread does not wait for the encode thread, and the frame's present waits only until that block is encoded (snap_commit_wait), before its blit.
 // The ring's length is the number of frames the game may run ahead of the screen: DM_PRESENT_SNAP=<n> (2 to SNAP_MAX; 1 = 2). Off by default; the iOS launcher's Frame buffering toggle enables it.
+// Without a length from DM_PRESENT_SNAP the ring has as many slots as the game's window has textures (at least 2): a slot is free only once its display blit, queued behind the
+// next frame's work, has run, so a ring shorter than the swap chain lets the game run fewer frames ahead than on the Switch. Pokémon Pokopia's window has 3: with a ring of 2 its
+// acquire waited for the ring almost every frame (13-30 ms a frame on a MacBook Air M4), and frames of 100-250 ms came several times a second; with 3, none over 25 ms.
 #define SNAP_MAX 4
 // old: the slot's texture before the presented size or format last changed, resident until the slot's next use (snap_take)
 static struct { id<MTLTexture> tex, old; uint64_t serial; _Atomic uint64_t ticket, ev; } g_snap[SNAP_MAX];
 static id<MTL4CommandAllocator> g_snap_alloc[SNAP_MAX]; static id<MTL4CommandBuffer> g_snap_cb[SNAP_MAX];
 static id<MTLResidencySet> g_snap_res; static id<MTLSharedEvent> g_snap_ev; static uint64_t g_snap_v;
 static _Atomic uint64_t g_snap_next, g_snap_cmt;   // g_snap_cmt: the last copy the encode thread has committed (its g_snap_v)
-static int g_snap_n = 2;
+static int g_snap_n = 2, g_snap_wtex;
+void mtl_snap_window_textures(int n) { if (n > g_snap_wtex) g_snap_wtex = n; }
 int mtl_snap_on(void) {
     static int v = -1; if (v >= 0) return v;
     const char *e = getenv("DM_PRESENT_SNAP");
-    int n = e ? atoi(e) : DM_GAME_PRESENT_SNAP ? 2 : 0;   // the profile's present_snap (a ring of 2)
+    int n = e ? atoi(e) : DM_GAME_PRESENT_SNAP ? MAX(2, g_snap_wtex) : 0;   // the profile's present_snap (a ring as long as the window's swap chain)
     v = n > 0; g_snap_n = n < 2 ? 2 : n > SNAP_MAX ? SNAP_MAX : n;
-    if (v) MLOG("present snapshots (DM_PRESENT_SNAP=%d): each present is copied into a ring of %d host textures and the game's texture is free at once", n, g_snap_n);
+    if (v) MLOG("present snapshots (%s): each present is copied into a ring of %d host textures and the game's texture is free at once", e ? "DM_PRESENT_SNAP" : "profile present_snap, a slot per window texture", g_snap_n);
     return v;
 }
 static void snap_commit_wait(uint64_t v) { if (v) rec_note_wait(&g_snap_cmt, v); }
