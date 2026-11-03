@@ -29,6 +29,11 @@ static uint32_t sf_new(const char *name, int domain) {
     pthread_mutex_unlock(&g_sf_mu);
     return SF_H0 + i;
 }
+uint32_t dm_sf_session(const char *name) {
+    uint32_t h = sf_new(name, 0);
+    LOG("sf: %s → host session %#x (every request succeeds with zeroed output)", name, h);
+    return h;
+}
 
 HLE_FORCE("_ZN2nn2sf4hipc31InitializeHipcServiceResolutionEv", "service name resolution (connects to sm); the host resolves the names it serves itself", Result, h_sf_InitRes, void) { return RES_OK; }
 HLE_FORCE("_ZN2nn2sf4hipc29FinalizeHipcServiceResolutionEv", "service name resolution (sm)", void, h_sf_FinRes, void) {}
