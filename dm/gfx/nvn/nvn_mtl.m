@@ -3252,6 +3252,7 @@ static id<MTLTexture> tex_mtl_(const tex_t *ct) {
         tex_put(t->serial, pk);
         return pk->view ? pk->view : pk->tex;
     }
+    if ([have isKindOfClass:[NvPkg class]] && ((NvPkg *)have)->sp) return sp_resolve(have);
     if (have) return have;
     if (t->d.target == 10) {   // Buffer texture (TARGET_BUFFER): create the texture-buffer view directly on the memory pool buffer (zero copy; the GPU reads the pool's current content at execution time, same as NVN semantics)
         uint32_t pf = 0; uint8_t swz[4]; int bw, bh, bpb = nvn_fmt_bpb(t->d.format, &bw, &bh);
@@ -3277,6 +3278,11 @@ static id<MTLTexture> tex_mtl_(const tex_t *ct) {
         res_add(mt);
         tex_put(t->serial, mt);
         return mt;
+    }
+    if (t->d.flags & NVN_TEXTURE_FLAGS_SPARSE) {
+        int retry = 0; NvPkg *pk = sp_new(t, &retry);
+        if (pk) { tex_put(t->serial, pk); return pk->view ? pk->view : pk->tex; }
+        if (retry) return nil;
     }
     alias_key ak; memset(&ak, 0, sizeof ak); ak.pool = (uint64_t)(uintptr_t)t->pool; ak.off = t->off; ak.d = t->d;
     // IMAGE permits shader writes; it does not change storage. Xenoblade Chronicles 3's depth and stencil-sampling objects differ only by this flag. Separate Metal textures
