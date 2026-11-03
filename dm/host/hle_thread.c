@@ -13,8 +13,10 @@
 #include <errno.h>
 #include <sched.h>
 #include <signal.h>
+#include <sys/event.h>
 #include <sys/mman.h>
 #include <time.h>
+#include <unistd.h>
 #include <mach/mach.h>
 #include <pthread/qos.h>
 #include <dlfcn.h>
@@ -870,10 +872,27 @@ void dm_thread_cpu(char *out, size_t n, double secs) {
 }
 // Sleep until dl (host monotonic ns) on time: macOS nanosleep / mach_wait_until carry timer slack; measured, 33 ms sleeps take about 36.4 ms, 5 ms take 6.1 ms, 1 ms take 1.26 ms (the same at any QoS).
 // Metroid Dread's sound thread sleeps "33 ms minus this round's work" (main+0xf95b0), and on the host its period became 36.9 ms; cutscenes render a frame whenever the audio play position that thread updates moves, so they ran at about 27 fps (30 on the Switch).
-// Each step sleeps only 3/4 of the remaining time (the slack is at most about 25%, so it never oversleeps), looping until within 20 µs: a 33 ms sleep takes about 4 system calls with an error of tens of microseconds, and nothing spins
+// A critical kqueue timer (NOTE_CRITICAL: no slack) per thread wakes it once at the deadline, within tens of microseconds; without a kqueue each step sleeps only 3/4 of the remaining time (the slack is at most about 25%, so it never oversleeps), looping until within 20 µs. Nothing spins
+static pthread_key_t g_sleep_kq_key;
+static pthread_once_t g_sleep_kq_once = PTHREAD_ONCE_INIT;
+static void sleep_kq_close(void *p) { close((int)(intptr_t)p - 1); }
+static void sleep_kq_init(void) { pthread_key_create(&g_sleep_kq_key, sleep_kq_close); }
+static int sleep_kq(void) {
+    pthread_once(&g_sleep_kq_once, sleep_kq_init);
+    int kq = (int)(intptr_t)pthread_getspecific(g_sleep_kq_key) - 1;
+    if (kq < 0 && (kq = kqueue()) >= 0) pthread_setspecific(g_sleep_kq_key, (void *)(intptr_t)(kq + 1));
+    return kq;
+}
 static void sleep_precise(uint64_t dl) {
+    int kq = sleep_kq();
     for (int i = 0; i < 16; i++) {
         uint64_t now = now_ns(); if (now + 20000 >= dl) return;
+        if (kq >= 0) {
+            struct kevent ev, out;
+            EV_SET(&ev, 1, EVFILT_TIMER, EV_ADD | EV_ONESHOT, NOTE_NSECONDS | NOTE_CRITICAL, (int64_t)(dl - now), 0);
+            kevent(kq, &ev, 1, &out, 1, NULL);
+            continue;
+        }
         uint64_t rem = dl - now, s = rem < 100000 ? rem : rem - rem / 4;
         struct timespec ts = {(time_t)(s / 1000000000u), (long)(s % 1000000000u)}; nanosleep(&ts, 0);
     }
