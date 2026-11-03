@@ -64,6 +64,16 @@ def frames(tsv, t0, t1):
     return ft, shown, gpu, dropped, len(sel)
 
 
+def power(log_text, tsv, t0, t1):
+    with open(tsv, errors='replace') as fh:
+        win = [int(c[0]) for c in (ln.rstrip('\n').split('\t') for ln in fh) if len(c) == 3 and c[1] == '@t_s' and c[0].isdigit() and t0 <= float(c[2]) < t1]
+    if not win: return {}
+    lines = [(int(f), float(w), int(p)) for f, w, p in re.findall(r'power up to frame (\d+): CPU energy ([\d.]+) W.*?(\d+)% of it on performance cores', log_text)]
+    lines = [x for x in lines if min(win) + 300 <= x[0] <= max(win)]
+    if not lines: return {}
+    return {'cpu_w': round(statistics.median(x[1] for x in lines), 2), 'pcore': round(statistics.median(x[2] for x in lines), 1)}
+
+
 def summary(ft, shown, gpu, dropped, n, secs, budget):
     d = {'frames': n, 'fps': round(n / secs, 1) if secs else None, 'dropped': dropped}
     for name, xs in (('frame', ft), ('shown', shown), ('gpu', gpu)):
@@ -126,6 +136,7 @@ def run_one(a, gid, build, var, route, out, lock):
     m = re.findall(r'frame step: game time [\d.]+ s in [\d.]+ s \(([\d.]+) of real time\)', log_text)
     if m: s['game_speed'] = float(m[-1])
     s['red_lines'] = sum(1 for ln in log_text.splitlines() if '[RED]' in ln)
+    if (out / 'frames.tsv').is_file(): s.update(power(log_text, out / 'frames.tsv', route['from'], route['from'] + route['secs']))
     return s
 
 
@@ -206,9 +217,9 @@ def main():
             d = out / f'{label}-{i + 1}'
             s = run_one(a, gid, build, var, route, d, lock); results[label].append(s)
             print(f'  {label} run {i + 1}: ' + (f'{s["fps"]} fps, frame p50 {s["frame_p50"]} / p99 {s["frame_p99"]} / max {s["frame_max"]} ms, GPU p50 {s["gpu_p50"]} ms' if s.get('frames') else f'no frames (see {d / "log.txt"})'), flush=True)
-    keys = ['fps', 'frame_p50', 'frame_p95', 'frame_p99', 'frame_max', 'shown_p99', 'shown_max', 'dropped', 'over_budget', 'gpu_p50', 'gpu_p95', 'game_speed', 'red_lines']
+    keys = ['fps', 'frame_p50', 'frame_p95', 'frame_p99', 'frame_max', 'shown_p99', 'shown_max', 'dropped', 'over_budget', 'gpu_p50', 'gpu_p95', 'cpu_w', 'pcore', 'game_speed', 'red_lines']
     md = (f'{gid}, route `{a.route}` ({route["about"]}), window {route["secs"]:g} s, fps target {a.fps or "profile"}, render scale {a.scale or "profile"}; '
-          f'medians over runs (range); times in ms; over_budget = frames longer than 1.5 frame times\n\n' + table(results, keys) + '\n')
+          f'medians over runs (range); times in ms; over_budget = frames longer than 1.5 frame times; cpu_w = CPU energy in W, pcore = % of CPU time on performance cores (from the power lines)\n\n' + table(results, keys) + '\n')
     (out / 'results.md').write_text(md); (out / 'results.json').write_text(json.dumps({'game': gid, 'route': a.route, **{k: v for k, v in vars(a).items() if k != 'build' and k != 'save'}, 'save': str(a.save), 'variants': variants, 'results': results}, indent=1, default=str))
     print('\n' + md)
     sys.exit(0 if all(r.get('frames') for rs_ in results.values() for r in rs_) else 1)

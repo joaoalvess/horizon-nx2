@@ -25,6 +25,15 @@ class Bench(unittest.TestCase):
             self.assertEqual(s['fps'], 100.0); self.assertEqual(s['frame_p50'], 10.0); self.assertEqual(s['frame_p99'], 10.0); self.assertEqual(s['frame_max'], 50.0)
             self.assertEqual(s['over_budget'], 1)   # only the 50 ms frame is longer than 1.5 × 8.33 ms
 
+    def test_power_lines_inside_the_window(self):
+        with tempfile.TemporaryDirectory() as d:
+            f = Path(d) / 'frames.tsv'
+            f.write_text('frame\tname\tvalue\n' + ''.join(f'{i}\t@t_s\t{i / 100:.2f}\n' for i in range(1300)))
+            line = '[dm] [nvn] power up to frame {}: CPU energy {} W, 1.0 mJ per frame (60.0 fps); CPU 50% (100 = one core), {}% of it on performance cores; wakeups 1/s\n'
+            log = ''.join(line.format(n, w, p) for n, w, p in ((300, 9.0, 99), (600, 1.0, 80), (900, 2.0, 20), (1200, 9.0, 1)))
+            self.assertEqual(bench.power(log, f, 3.0, 9.01), {'cpu_w': 1.5, 'pcore': 50.0})
+            self.assertEqual(bench.power('', f, 3.0, 9.01), {})
+
     def test_percentile(self):
         xs = list(range(1, 101))
         self.assertEqual(bench.pct(xs, 50), 50); self.assertEqual(bench.pct(xs, 99), 99); self.assertEqual(bench.pct(xs, 100), 100); self.assertIsNone(bench.pct([], 50))
