@@ -173,6 +173,16 @@ int dm_native_image(uint32_t handle, uint8_t **mem, uint64_t *size, uint32_t *w,
     pthread_mutex_unlock(&g_cv_mu);
     return ok;
 }
+uint64_t dm_native_pool_size(uint32_t w, uint32_t h, uint32_t n) { return native_size(w, h) * (n ? n : 1); }
+int dm_native_pool_init(void *t, void *mem, uint64_t size, uint32_t w, uint32_t h, uint32_t n) {
+    cv_pool *o = calloc(1, sizeof *o); if (!o) return 0;
+    o->count = n ? n : 1; if (!(o->img = calloc(o->count, sizeof *o->img))) { free(o); return 0; }
+    o->magic = CV_MAGIC; o->w = (uint16_t)w; o->h = (uint16_t)h; o->mem = mem; o->size = size; o->native = 1;
+    *(cv_pool **)t = o;
+    return 1;
+}
+uint32_t dm_native_pool_handle(const void *t, uint32_t i) { return h_cv_native(t, i); }
+void dm_native_pool_fini(void *t) { h_cv_poolfin(t); }
 HLE_FORCE("_ZN2nn5codec29ReadDecoderOutputImageRgbaHdrEPKNS0_25VideoDecoderImagePoolTypeEjttttPvmm", "HDR pictures are not served: black",
           Result, h_cv_rgbahdr, const void *t, uint32_t i, uint64_t x, uint64_t y, uint64_t w, uint64_t h, void *dst, uint64_t stride, uint64_t size) {
     (void)t; (void)i; (void)x; (void)y; (void)w; (void)h; (void)stride;
