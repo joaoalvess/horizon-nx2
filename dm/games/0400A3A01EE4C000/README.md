@@ -9,6 +9,7 @@ A Switch 2 game: update v655360 (the title screen says Ver. 2.0.1), SDK 20.5.25 
 | `mem_reserve 0x270000000`, `app_pool 0x240000000` | [`game.tsv`](game.tsv) | Donkey Kong Bananza's 9 GB layout, not measured here. The NPDM declares no system resource |
 | `mem_used 0x5600000` | `game.tsv` | the rewritten modules take 82 MB, more than the default 64 MB that `SetHeapSize` checks the game's request against |
 | `pad_layout full` | `game.tsv` | |
+| `present_snap on` | `game.tsv` | on a MacBook Air M4 (docked, 1920x1080) the GPU idled waiting for one of the game's 3 swapchain textures and macOS clocked it down: about 47 fps without, a steady 60 while the Mac is thermal nominal ([Present snapshots](../../../docs/reference/frame-rate.md#present-snapshots-the-games-swapchain-texture-free-at-once)) |
 
 ## Files
 
@@ -45,4 +46,5 @@ The first boot shows the language list: `A`, `LUp`, `A` picks English. The chara
 - [HFMA2 .H0_NH1](../../../docs/reference/shaders.md#hfma2-h0_nh1).
 - [Ampere instructions new in Pokémon Pokopia](../../../docs/reference/shaders.md#ampere-instructions-new-in-pokémon-pokopia).
 - [Integer buffer textures read through float slots](../../../docs/reference/rendering.md#integer-buffer-textures-read-through-float-slots).
+- [Present snapshots](../../../docs/reference/frame-rate.md#present-snapshots-the-games-swapchain-texture-free-at-once): 47 fps without them on a MacBook Air M4.
 - [The Joy-Con mouse pointer](../../../docs/reference/services.md#the-joy-con-mouse-pointer) and [GameShare guest displays](../../../docs/reference/services.md#gameshare-guest-displays): boot aborts.

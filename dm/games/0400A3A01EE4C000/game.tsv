@@ -23,6 +23,11 @@ modules	main subsdk0 sdk
 romfs_marker	motor_asset_re/KIDS_PLATFORM_OUNCE/root.rdb
 zip_store	.fdata:.file:.rdb:.webm:.metallib
 
+# ---- Graphics ----
+# Present snapshots (MacBook Air M4, docked, 1920x1080, interval 1): without them the GPU idled waiting for one of the 3 swapchain textures and macOS clocked it down
+# (about 47 fps, GPU 17 ms, 81-108 of 300 frames dropped); with DM_PRESENT_SNAP=2 a steady 60 fps (GPU 13-14 ms, 0-2 of 300 dropped) until the Mac turns thermal fair
+present_snap	on
+
 # ---- Memory ----
 # The Switch 2 leaves games 9 GB of its 12 GB (Donkey Kong Bananza's figure, not measured here). The NPDM declares no system resource (META +0x14 = 0): no virtual address memory.
 # 256 MB in front + 256 MB alias region + 256 MB stack region + 9 GB heap region
