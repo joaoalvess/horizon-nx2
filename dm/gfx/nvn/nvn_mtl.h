@@ -18,6 +18,7 @@ void mtl_pool_del(const void *mem);
 // memory pool Finalize: evict the textures built on this pool (pool object address) from the storage-sharing table
 void mtl_alias_drop_pool(const void *pool);
 void mtl_sparse_drop_pool(const void *pool);
+void mtl_sparse_drop_phys(const void *base, uint64_t size);
 int mtl_addr(uint64_t addr, uint64_t len, void **buf, uint64_t *off);   // 1 on success; buf is a (__bridge) id<MTLBuffer>
 
 typedef struct {

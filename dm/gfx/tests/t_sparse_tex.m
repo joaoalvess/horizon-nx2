@@ -64,6 +64,8 @@ static NVNtexture g_A, g_B, g_C;
 static void rec_clear(void) { NVNcopyRegion r = {0, 0, 0, 256, 128, 1}; float c[4] = {1, 0, 1, 1}; NVNtextureView v; h_nvnTextureViewSetDefaults(&v); h_nvnTextureViewSetLayers(&v, 0, 1);
     h_nvnCommandBufferClearTexture(&g_cmd, &g_A, &v, &r, c, 15); }
 static void rec_copy(void) { NVNcopyRegion r = {384, 256, 0, 256, 128, 1}; h_nvnCommandBufferCopyBufferToTexture(&g_cmd, (NVNbufferAddress)(g_cmdmem + 0x40000), &g_A, NULL, &r, 0); }
+static NVNtexture g_G, g_H;
+static void rec_copy_g(void) { NVNcopyRegion r = {0, 0, 0, 128, 128, 1}; h_nvnCommandBufferCopyBufferToTexture(&g_cmd, (NVNbufferAddress)(g_cmdmem + 0x40000), &g_G, NULL, &r, 0); }
 static int g_off_made;
 static void *resolve_off(void *t) { @autoreleasepool { g_off_made = tex_mtl(TX((const NVNtexture *)t)) != nil; } return NULL; }
 
@@ -210,6 +212,37 @@ int main(void) { @autoreleasepool {
     EXPECT("F first resolved off the submit thread: nothing made or kept", !g_off_made && !tex_get(TX(&g_F)->serial));
     const NVNtexture *tf[] = {&g_F}; submit(NULL, tf, 1);
     EXPECT("F at its next resolution on the submit thread: a Metal sparse texture", pkg(&g_F) && pkg(&g_F)->sp);
+
+    uint64_t offG = (offF + TX(&g_F)->L.size + TILE - 1) & ~(uint64_t)(TILE - 1);
+    h_nvnTextureBuilderSetTarget(&tb, NVN_TEXTURE_TARGET_2D_ARRAY); h_nvnTextureBuilderSetSize3D(&tb, 512, 512, 2); h_nvnTextureBuilderSetStorage(&tb, (NVNmemoryPool *)&g_sparse, (ptrdiff_t)offG); h_nvnTextureInitialize(&g_G, &tb);
+    uint64_t offH = (offG + TX(&g_G)->L.size + TILE - 1) & ~(uint64_t)(TILE - 1);
+    h_nvnTextureBuilderSetSize3D(&tb, 256, 256, 1); h_nvnTextureBuilderSetStorage(&tb, (NVNmemoryPool *)&g_sparse, (ptrdiff_t)offH); h_nvnTextureInitialize(&g_H, &tb);
+    const uint32_t ca = 0xFF204060, cb = 0xFF608020, cc = 0xFF2080C0, cd = 0xFFC08020;
+    fill32(60, 0, TILE, ca); fill32(61, 0, TILE, cc);
+    map(&g_sparse, tile_at(&g_G, 0, 0, 0, 0), TILE, 60, 0); map(&g_sparse, tile_at(&g_G, 1, 0, 2, 1), TILE, 60, 0); map(&g_sparse, tile_at(&g_H, 0, 0, 1, 1), TILE, 60, 0);
+    uint64_t t0 = g_sp_ntiles, up0 = g_sp_up_bytes;
+    const NVNtexture *tgh[] = {&g_G, &g_H}; submit(NULL, tgh, 2);
+    NvPkg *pg = pkg(&g_G), *ph = pkg(&g_H);
+    EXPECT("G and H, on the same physical page in three places: Metal sparse textures", pg && pg->sp && ph && ph->sp);
+    if (pg && pg->sp && ph && ph->sp) {
+        uint32_t ag[][4] = {{5, 5, 0, 0}, {2 * 128 + 5, 128 + 5, 1, 0}}, ah[][4] = {{128 + 5, 128 + 5, 0, 0}}; float v[3][4];
+        EXPECT("the three units: one heap tile, uploaded once", g_sp_ntiles == t0 + 1 && g_sp_up_bytes == up0 + TILE);
+        texels(pg->tex, 2, ag, v); texels(ph->tex, 1, ah, v + 2);
+        EXPECT("the three units: the page", near(v[0], ca) && near(v[1], ca) && near(v[2], ca));
+        { uint32_t *b = (uint32_t *)(g_cmdmem + 0x40000); for (int i = 0; i < 128 * 128; i++) b[i] = cb; }
+        submit(rec_copy_g, NULL, 0);
+        texels(pg->tex, 2, ag, v); texels(ph->tex, 1, ah, v + 2);
+        EXPECT("a buffer copy into G tile (0,0): seen through G layer 1 tile (2,1) and H tile (1,1)", near(v[0], cb) && near(v[1], cb) && near(v[2], cb));
+        up0 = g_sp_up_bytes; fill32(60, 0, TILE, cd);
+        submit(NULL, NULL, 0);
+        texels(pg->tex, 2, ag, v); texels(ph->tex, 1, ah, v + 2);
+        EXPECT("a CPU write to the page: uploaded once, the new bytes in the three units", g_sp_up_bytes == up0 + TILE && near(v[0], cd) && near(v[1], cd) && near(v[2], cd));
+        map(&g_sparse, tile_at(&g_H, 0, 0, 1, 1), TILE, 61, 0);
+        submit(NULL, NULL, 0);
+        texels(pg->tex, 2, ag, v); texels(ph->tex, 1, ah, v + 2);
+        EXPECT("H tile (1,1) remapped onto another page: a tile of its own, G keeps the first", g_sp_ntiles == t0 + 2 && near(v[2], cc) && near(v[0], cd) && near(v[1], cd));
+    }
+    h_nvnTextureFinalize(&g_G); h_nvnTextureFinalize(&g_H);
     h_nvnTextureFinalize(&g_D); h_nvnTextureFinalize(&g_E); h_nvnTextureFinalize(&g_F);
 
     h_nvnTextureFinalize(&g_A); h_nvnTextureFinalize(&g_B); h_nvnTextureFinalize(&g_C);

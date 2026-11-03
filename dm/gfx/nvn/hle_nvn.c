@@ -256,7 +256,7 @@ NVN(nvnMemoryPoolFinalize, void, NVNmemoryPool *p) {
     mtl_alias_drop_pool(p); ((pool_t *)p)->magic = 0; mtl_sparse_drop_pool(p);
     if (((pool_t *)p)->flags & 0x200 && ((pool_t *)p)->vp) vpool_release((pool_t *)p);
     if (((pool_t *)p)->mem && !(((pool_t *)p)->flags & 0x200)) {   // A virtual pool's storage is borrowed from a physical pool; do not unregister it
- nvn_dirty_remove_range(((pool_t *)p)->mem); mtl_pool_del(((pool_t *)p)->mem); fl_drop(((pool_t *)p)->mem, ((pool_t *)p)->size); } }
+ nvn_dirty_remove_range(((pool_t *)p)->mem); mtl_sparse_drop_phys(((pool_t *)p)->mem, ((pool_t *)p)->size); mtl_pool_del(((pool_t *)p)->mem); fl_drop(((pool_t *)p)->mem, ((pool_t *)p)->size); } }
 static void ft_flush(const uint8_t *a, uint64_t n);
 NVN(nvnMemoryPoolFlushMappedRange, void, const NVNmemoryPool *p, ptrdiff_t off, size_t n) {   // see ft_add and nvn_flushed
     const pool_t *o = (const pool_t *)p;

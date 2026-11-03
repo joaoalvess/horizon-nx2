@@ -2696,14 +2696,14 @@ void nvn_sparse_watch(const void *pool); int nvn_sparse_changes(const void *pool
 void nvn_sparse_units(const void *pool, int n, const uint64_t *a, const uint64_t *len, uint32_t *mapped, uint64_t *key, const uint8_t **phys);
 void nvn_sparse_written(const void *pool, int n, const uint64_t *a, const uint64_t *len, uint64_t stamp, uint8_t *out);
 static int mtl_fmt_depth(MTLPixelFormat f);
-enum { SP_TILE = 0x10000, SP_CHUNK = 1024, SP_NONE = ~0u, SP_DONE = ~1u, SP_PEND = 1, SP_MARK = 2, SP_UP = 4, SP_BATCH = 512, SP_RANGES = 256 };
+enum { SP_TILE = 0x10000, SP_CHUNK = 1024, SP_NONE = ~0u, SP_DONE = ~1u, SP_PEND = 1, SP_MARK = 2, SP_UP = 4, SP_SH = 8, SP_BATCH = 512, SP_RANGES = 256 };
 typedef struct { uint64_t key; uint32_t tile, pos, flags; } sp_unit;
 struct sp_tex {
     uint64_t id, serial, mem, ls;
     const void *pool; nvn_texdesc d, td;
     uint32_t tw, th, bw, bh, bpb, layers, levels, split, ntiled, per, nsm;
     uint32_t tx[16], ubase[17], mfirst, mtx[16], mty[16], tail;
-    int rb_shift, gone, gpu; uint64_t vgen, stamp, seen, sub; uint32_t mapped, npend;
+    int rb_shift, gone, gpu, share; uint64_t vgen, stamp, seen, sub; uint32_t mapped, npend;
     sp_unit *u; uint32_t *ml;
 };
 static pthread_mutex_t g_sp_mu = PTHREAD_RECURSIVE_MUTEX_INITIALIZER;
@@ -2775,6 +2775,44 @@ static void sp_tiles_drain(void) {
     for (NSUInteger c = 0; c < g_sp_heaps.count; c++)
         if (g_sp_heaps[c] != (id)[NSNull null] && !g_sp_ch[c].used && g_sub_serial - g_sp_ch[c].idle > 600) { defer_obj_release(g_sp_heaps[c]); g_sp_heaps[c] = [NSNull null]; }
 }
+typedef struct { const uint8_t *ph; uint32_t fmt, refs, next; int linked; uint64_t stamp, round; } sp_shared;
+static sp_shared *g_sp_sh; static uint32_t g_sp_shcap, g_sp_nsh, g_sp_hb[1 << 16]; static uint64_t g_sp_round;
+static uint32_t sp_sh_fmt(const struct sp_tex *p) { return (uint32_t)p->d.format | (uint32_t)p->d.target << 16; }
+static uint32_t sp_sh_hash(const uint8_t *ph, uint32_t fmt) { return (uint32_t)((((uint64_t)(uintptr_t)ph >> 12) ^ fmt) * 0x9E3779B97F4A7C15ull >> 48); }
+static uint32_t sp_sh_find(const uint8_t *ph, uint32_t fmt) {
+    for (uint32_t t = g_sp_hb[sp_sh_hash(ph, fmt)]; t; t = g_sp_sh[t - 1].next) if (g_sp_sh[t - 1].ph == ph && g_sp_sh[t - 1].fmt == fmt) return t - 1;
+    return SP_NONE;
+}
+static void sp_sh_add(uint32_t tile, const uint8_t *ph, uint32_t fmt) {
+    if (tile >= g_sp_shcap) { uint32_t c = MAX(2 * g_sp_shcap, (tile / SP_CHUNK + 1) * SP_CHUNK); sp_shared *n = realloc(g_sp_sh, (size_t)c * sizeof *n);
+        if (!n) MDIE("sparse texture shared tile table allocation failed");
+        g_sp_sh = n; g_sp_shcap = c; }
+    uint32_t b = sp_sh_hash(ph, fmt); g_sp_sh[tile] = (sp_shared){ph, fmt, 1, g_sp_hb[b], 1, ~0ull, 0}; g_sp_hb[b] = tile + 1; g_sp_nsh++;
+}
+static void sp_sh_unlink(uint32_t tile) {
+    sp_shared *e = &g_sp_sh[tile];
+    if (!e->linked) return;
+    for (uint32_t *l = &g_sp_hb[sp_sh_hash(e->ph, e->fmt)]; *l; l = &g_sp_sh[*l - 1].next) if (*l == tile + 1) { *l = e->next; break; }
+    e->linked = 0;
+}
+static void sp_unit_drop(struct sp_tex *p, uint32_t i) {
+    sp_unit *u = &p->u[i];
+    if (!(u->flags & SP_SH)) sp_tile_free(u->tile, sp_unit_tiles(p, i));
+    else if (!--g_sp_sh[u->tile].refs) { sp_sh_unlink(u->tile); g_sp_nsh--; sp_tile_free(u->tile, 1); }
+    u->flags &= ~(uint32_t)SP_SH;
+}
+static int sp_shareable(const struct sp_tex *p, uint32_t i, const uint8_t *phys) {
+    uint32_t k = i % p->per;
+    if (!p->share || !phys || k >= p->ntiled) return 0;
+    unsigned l = sp_unit_level(p, k); uint32_t j = k - p->ubase[l];
+    return (j % p->tx[l] + 1) * p->tw <= MAX(p->d.width >> l, 1u) && (j / p->tx[l] + 1) * p->th <= MAX(p->d.height >> l, 1u);
+}
+void mtl_sparse_drop_phys(const void *base, uint64_t size) {
+    pthread_mutex_lock(&g_sp_mu);
+    for (uint32_t t = 0; g_sp_nsh && t < g_sp_shcap; t++)
+        if (g_sp_sh[t].refs && g_sp_sh[t].ph >= (const uint8_t *)base && g_sp_sh[t].ph < (const uint8_t *)base + size) sp_sh_unlink(t);
+    pthread_mutex_unlock(&g_sp_mu);
+}
 typedef struct { uint32_t chunk; MTL4UpdateSparseTextureMappingOperation op; } sp_op; static sp_op *g_sp_ops; static int g_sp_nops, g_sp_opcap;
 static void sp_op_add(uint32_t tile, MTLRegion r, NSUInteger level, NSUInteger slice, int unmap) {
     if (g_sp_nops == g_sp_opcap) { g_sp_opcap = g_sp_opcap ? 2 * g_sp_opcap : 256; if (!(g_sp_ops = realloc(g_sp_ops, (size_t)g_sp_opcap * sizeof *g_sp_ops))) MDIE("sparse texture operation list allocation failed"); }
@@ -2820,15 +2858,15 @@ static uint8_t *sp_raw(uint64_t n) {
     if (n > cap) { free(b); cap = MAX(n, (uint64_t)SP_TILE); if (!(b = malloc(cap))) MDIE("sparse texture gather of %llu bytes failed", (unsigned long long)cap); }
     return b;
 }
-static void sp_upload(NvPkg *pk, struct sp_tex *p, uint32_t i, const uint8_t *phys) {
+static int sp_upload(NvPkg *pk, struct sp_tex *p, uint32_t i, const uint8_t *phys) {
     uint32_t s = i / p->per, k = i % p->per; uint64_t a, n; sp_unit_range(p, i, &a, &n);
     uint8_t *raw = sp_raw(n); void *mb = NULL; uint64_t mo = 0;
-    if (!sp_hold(p)) return;
+    if (!sp_hold(p)) return 0;
     nvn_sparse_protect(p->pool, a, n);
     pthread_mutex_unlock(&g_sp_mu);
     int gpu = k < p->ntiled && phys && !p->rb_shift && g_nvn_deswz_gpu && up_src((uint64_t)(uintptr_t)phys, SP_TILE, &mb, &mo);
     unsigned seq = g_up_seq;
-    if (!gpu) { if (!sp_hold(p)) return; nvn_sparse_copy(p->pool, raw, a, n); pthread_mutex_unlock(&g_sp_mu); }
+    if (!gpu) { if (!sp_hold(p)) return 0; nvn_sparse_copy(p->pool, raw, a, n); pthread_mutex_unlock(&g_sp_mu); }
     up_begin(); g_sp_up_bytes += n;
     if (k < p->ntiled) {
         unsigned l = sp_unit_level(p, k); uint32_t j = k - p->ubase[l], x = j % p->tx[l], y = j / p->tx[l];
@@ -2839,15 +2877,15 @@ static void sp_upload(NvPkg *pk, struct sp_tex *p, uint32_t i, const uint8_t *ph
             id<MTLBuffer> stg = up_alloc(SP_TILE, &off); size_t poff; id<MTLBuffer> prm = up_param_alloc(&poff);
             if (g_up_seq != seq) up_src((uint64_t)(uintptr_t)phys, SP_TILE, &mb, &mo);
             if (!nvn_deswz_gpu_encode_m4(g_up_ce, g_up_ct, prm, poff, (__bridge id<MTLBuffer>)mb, mo, &p->td, 0, 0, stg, off, pitch)) {
-                [g_up_texs addObject:pk->tex]; up_blit_at(stg, off, pitch, pitch * rows, sz, pk->tex, s, l, org); return; }
-            if (!sp_hold(p)) return;
+                [g_up_texs addObject:pk->tex]; up_blit_at(stg, off, pitch, pitch * rows, sz, pk->tex, s, l, org); return 1; }
+            if (!sp_hold(p)) return 0;
             nvn_sparse_copy(p->pool, raw, a, n); pthread_mutex_unlock(&g_sp_mu);
         }
         id<MTLBuffer> stg = sp_stage(pitch * rows, &off);
         nvn_deswizzle(&p->td, 0, 0, raw, (uint8_t *)stg.contents + off, pitch);
         if (p->rb_shift) rb_swap_rows((uint8_t *)stg.contents + off, pitch, rows, 1, pitch, pitch * rows, p->rb_shift);
         [g_up_texs addObject:pk->tex]; up_blit_at(stg, off, pitch, pitch * rows, sz, pk->tex, s, l, org);
-        return;
+        return 1;
     }
     const uint8_t *src = raw - nvn_tex_level_offset(&p->d, p->split);
     [g_up_texs addObject:pk->tex];
@@ -2859,6 +2897,7 @@ static void sp_upload(NvPkg *pk, struct sp_tex *p, uint32_t i, const uint8_t *ph
         if (p->rb_shift) rb_swap_rows((uint8_t *)stg.contents + off, pitch, rows, 1, pitch, pitch * rows, p->rb_shift);
         up_blit_at(stg, off, pitch, pitch * rows, MTLSizeMake(w, h, 1), pk->tex, s, l, MTLOriginMake(0, 0, 0));
     }
+    return 1;
 }
 static int sp_level_mapped(const struct sp_tex *p, unsigned l) {
     uint32_t lo = l >= p->split ? p->ntiled : p->ubase[l], hi = l >= p->split ? p->per : p->ubase[l + 1];
@@ -2877,7 +2916,7 @@ static void sp_view(NvPkg *pk, int force) {
     pk->vbase = (int)r; g_ser_gen++;
 }
 static uint32_t *g_sp_idx, g_sp_nidx, g_sp_idxcap;
-typedef struct { uint32_t i; const uint8_t *phys; } sp_upl; static sp_upl *g_sp_upl; static uint32_t g_sp_nupl, g_sp_uplcap;
+typedef struct { uint32_t i, sh; const uint8_t *phys; } sp_upl; static sp_upl *g_sp_upl; static uint32_t g_sp_nupl, g_sp_uplcap;
 static uint64_t g_sp_a[SP_BATCH], g_sp_len[SP_BATCH], g_sp_key[SP_BATCH], g_sp_rng[SP_RANGES][2]; static uint32_t g_sp_m[SP_BATCH], g_sp_ix[SP_BATCH]; static const uint8_t *g_sp_phys[SP_BATCH]; static uint8_t g_sp_w[SP_BATCH];
 static void sp_mark(struct sp_tex *p, uint32_t i, uint32_t f) {
     if (!(p->u[i].flags & SP_MARK)) {
@@ -2903,7 +2942,7 @@ static void sp_reconcile(NvPkg *pk, int all, int written) {
     struct sp_tex *p = pk->sp; uint32_t n = p->layers * p->per; uint64_t st = nvn_dirty_now(), now = 0; int vchg = 0;
     int redo = atomic_load_explicit(&g_up_lost_n, memory_order_relaxed) && up_lost_take(pk->tex);
     if (!sp_hold(p)) return;
-    g_sp_nidx = g_sp_nupl = 0;
+    g_sp_nidx = g_sp_nupl = 0; g_sp_round++;
     if (!all && !redo) {
         uint64_t gen = nvn_sparse_gen(); now = gen;
         for (uint64_t at = 0; gen != p->vgen;) { int nr = nvn_sparse_changes(p->pool, p->vgen, g_sp_rng, SP_RANGES, &at);
@@ -2930,20 +2969,36 @@ static void sp_reconcile(NvPkg *pk, int all, int written) {
                 continue;
             }
             if (u->flags & SP_PEND) { u->flags &= ~(uint32_t)SP_PEND; p->npend--; g_sp_npend--; up = vchg = 1; }
-            if (u->tile == SP_NONE) {
-                if ((u->tile = sp_tile_alloc(nt)) == SP_NONE) continue;
-                sp_ops_unit(p, i, u->tile, 0); sp_ml_add(p, i); g_sp_ntiles += nt; g_sp_maps++; up = vchg = fresh = 1;
+            int sh = sp_shareable(p, i, g_sp_phys[j]);
+            if (u->tile == SP_NONE || (g_sp_key[j] != u->key && (sh || (u->flags & SP_SH)))) {
+                uint32_t t = sh ? sp_sh_find(g_sp_phys[j], sp_sh_fmt(p)) : SP_NONE;
+                if (t != SP_NONE) g_sp_sh[t].refs++;
+                else if ((t = sp_tile_alloc(nt)) != SP_NONE) { g_sp_ntiles += nt; if (sh) sp_sh_add(t, g_sp_phys[j], sp_sh_fmt(p)); }
+                if (t == SP_NONE && u->tile == SP_NONE) continue;
+                if (t == SP_NONE && (u->flags & SP_SH)) { sp_ops_unit(p, i, u->tile, 1); sp_unit_drop(p, i); sp_ml_del(p, i); u->tile = SP_NONE; u->key = 0; vchg = 1; continue; }
+                if (t != SP_NONE) {
+                    sp_ops_unit(p, i, t, 0);
+                    if (u->tile == SP_NONE) { sp_ml_add(p, i); g_sp_maps++; } else sp_unit_drop(p, i);
+                    u->tile = t; if (sh) u->flags |= SP_SH;
+                    up = vchg = fresh = 1;
+                }
             }
             if (g_sp_key[j] != u->key) up = 1;
             u->key = g_sp_key[j];
+            if (up && (u->flags & SP_SH)) { sp_shared *e = &g_sp_sh[u->tile]; if (e->round == g_sp_round || (!redo && e->stamp != ~0ull && !nvn_dirty_since(g_sp_phys[j], SP_TILE, e->stamp))) up = 0; else e->round = g_sp_round; }
             if (!up || (p->gpu && !fresh)) continue;
             if (g_sp_nupl == g_sp_uplcap) { g_sp_uplcap = g_sp_uplcap ? 2 * g_sp_uplcap : 1024; if (!(g_sp_upl = realloc(g_sp_upl, (size_t)g_sp_uplcap * sizeof *g_sp_upl))) MDIE("sparse texture upload list allocation failed"); }
-            g_sp_upl[g_sp_nupl++] = (sp_upl){i, g_sp_phys[j]};
+            g_sp_upl[g_sp_nupl++] = (sp_upl){i, (u->flags & SP_SH) ? u->tile : SP_NONE, g_sp_phys[j]};
         }
     }
     pthread_mutex_unlock(&g_sp_mu);
     sp_emit(pk->tex, NULL);
-    for (uint32_t j = 0; j < g_sp_nupl; j++) sp_upload(pk, p, g_sp_upl[j].i, g_sp_upl[j].phys);
+    for (uint32_t j = 0; j < g_sp_nupl; j++)
+        if (sp_upload(pk, p, g_sp_upl[j].i, g_sp_upl[j].phys) && g_sp_upl[j].sh != SP_NONE) {
+            pthread_mutex_lock(&g_sp_mu); sp_shared *e = &g_sp_sh[g_sp_upl[j].sh];
+            if (e->refs && e->ph == g_sp_upl[j].phys) e->stamp = st;
+            pthread_mutex_unlock(&g_sp_mu);
+        }
     if (g_sp_nupl && !g_cb) up_flush();
     if (written) { p->stamp = p->seen = st; p->sub = g_sub_serial; }
     p->vgen = now;
@@ -2955,7 +3010,7 @@ static void sp_unmap(NvPkg *pk, int *wait) {
     for (uint32_t m = p->mapped; m-- > 0 && p->npend;) {
         uint32_t i = p->ml[m]; sp_unit *u = &p->u[i];
         if (!(u->flags & SP_PEND)) continue;
-        sp_ops_unit(p, i, u->tile, 1); sp_tile_free(u->tile, sp_unit_tiles(p, i)); sp_ml_del(p, i);
+        sp_ops_unit(p, i, u->tile, 1); sp_unit_drop(p, i); sp_ml_del(p, i);
         u->tile = SP_NONE; u->flags &= ~(uint32_t)SP_PEND; p->npend--; g_sp_npend--; g_sp_unmaps++;
     }
     pthread_mutex_unlock(&g_sp_mu);
@@ -2997,7 +3052,7 @@ static void sp_free(struct sp_tex *p) {
     if (!p) return;
     pthread_mutex_lock(&g_sp_mu);
     for (int i = 0; i < g_sp_n; i++) if (g_sp[i] == p) { g_sp[i] = g_sp[--g_sp_n]; break; }
-    for (uint32_t m = 0; m < p->mapped; m++) sp_tile_free(p->u[p->ml[m]].tile, sp_unit_tiles(p, p->ml[m]));
+    for (uint32_t m = 0; m < p->mapped; m++) sp_unit_drop(p, p->ml[m]);
     g_sp_npend -= p->npend;
     pthread_mutex_unlock(&g_sp_mu);
     free(p->u); free(p->ml); free(p);
@@ -3026,6 +3081,7 @@ static id<MTLTexture> sp_upgrade(NvPkg *pk, const tex_t *t, MTLTextureUsage add)
     d.textureType = base.textureType; d.pixelFormat = base.pixelFormat; d.width = base.width; d.height = base.height; d.depth = base.depth;
     d.arrayLength = base.arrayLength; d.mipmapLevelCount = base.mipmapLevelCount; d.storageMode = base.storageMode;
     d.usage = base.usage | add | (pf_r32i(base.pixelFormat) && ((base.usage | add) & MTLTextureUsageShaderWrite) ? MTLTextureUsageShaderAtomic : 0); d.placementSparsePageSize = MTLSparsePageSize64;
+    d.allowGPUOptimizedContents = p->gpu || (d.usage & (MTLTextureUsageRenderTarget | MTLTextureUsageShaderWrite));
     id<MTLTexture> nt = [g_dev newTextureWithDescriptor:d];
     if (!nt || nt.firstMipmapInTail != base.firstMipmapInTail || nt.tailSizeInBytes != base.tailSizeInBytes) {
         static int once; if (!once++) MLOG("[RED] sparse texture ser=%llu: cannot remake it with usage %#lx (Metal format %lu); not given", (unsigned long long)t->serial, (unsigned long)d.usage, (unsigned long)base.pixelFormat);
@@ -3040,7 +3096,8 @@ static id<MTLTexture> sp_upgrade(NvPkg *pk, const tex_t *t, MTLTextureUsage add)
         static int once; if (!once++) MLOG("[RED] sparse texture ser=%llu: no heap tiles to remake it with usage %#lx; not given", (unsigned long long)t->serial, (unsigned long)d.usage);
         return base;
     }
-    for (m = 0; m < p->mapped; m++) { uint32_t i = p->ml[m], n = sp_unit_tiles(p, i); sp_ops_unit(p, i, nw[m], 0); sp_tile_free(p->u[i].tile, n); p->u[i].tile = nw[m]; g_sp_ntiles += n; }
+    for (m = 0; m < p->mapped; m++) { uint32_t i = p->ml[m], n = sp_unit_tiles(p, i); sp_ops_unit(p, i, nw[m], 0); sp_unit_drop(p, i); p->u[i].tile = nw[m]; g_sp_ntiles += n; }
+    p->share = !p->gpu && !(d.usage & (MTLTextureUsageRenderTarget | MTLTextureUsageShaderWrite));
     pthread_mutex_unlock(&g_sp_mu);
     free(nw);
     res_add(nt);
@@ -3065,7 +3122,7 @@ static NvPkg *sp_new(const tex_t *t, int *retry, int gpu) {
     else if (mtl_fmt_depth(d.pixelFormat)) why = "a depth format";
     else if (t->L.layers != d.arrayLength || !t->L.layer_size || (t->L.layer_size & (SP_TILE - 1)) || d.mipmapLevelCount > 15) why = "layers or layer size unlike Metal's";
     if (!why) {
-        d.placementSparsePageSize = MTLSparsePageSize64;
+        d.placementSparsePageSize = MTLSparsePageSize64; d.allowGPUOptimizedContents = gpu || (d.usage & (MTLTextureUsageRenderTarget | MTLTextureUsageShaderWrite));
         MTLSize mt = [g_dev sparseTileSizeWithTextureType:d.textureType pixelFormat:d.pixelFormat sampleCount:1 sparsePageSize:MTLSparsePageSize64];
         if (ntl && (mt.width != tw || mt.height != th)) why = "Metal's tile shape is not NVN's";
         else if (t->pool->vmode != 2 || !on_sub_thread()) { *retry = 1; return nil; }
@@ -3097,7 +3154,7 @@ static NvPkg *sp_new(const tex_t *t, int *retry, int gpu) {
         return nil;
     }
     struct sp_tex *p = malloc(sizeof *p); if (!p) MDIE("sparse texture allocation failed");
-    *p = q; p->gpu = gpu; p->serial = t->serial; p->pool = t->pool; p->mem = (uint64_t)(uintptr_t)t->mem; p->rb_shift = rb_packed_shift(t->d.format);
+    *p = q; p->gpu = gpu; p->share = !gpu && !(tex.usage & (MTLTextureUsageRenderTarget | MTLTextureUsageShaderWrite)); p->serial = t->serial; p->pool = t->pool; p->mem = (uint64_t)(uintptr_t)t->mem; p->rb_shift = rb_packed_shift(t->d.format);
     uint32_t rows = th / (uint32_t)bh, sh = 0; while ((8u << sh) < rows) sh++;
     p->td = (nvn_texdesc){.target = NVN_TEXTURE_TARGET_2D, .format = t->d.format, .width = tw, .height = th, .depth = 1, .levels = 1, .pkg_block_h = (int)sh + 1};
     uint32_t n = p->layers * p->per;
@@ -3119,8 +3176,9 @@ static NvPkg *sp_new(const tex_t *t, int *retry, int gpu) {
 static void sp_stat(void) {
     pthread_mutex_lock(&g_sp_mu);
     int live = 0; for (NSUInteger c = 0; c < g_sp_heaps.count; c++) live += g_sp_heaps[c] != (id)[NSNull null];
-    if (g_sp_n || live) MLOG("Metal sparse textures: %d, %llu tiles mapped (%llu MB) in %d heaps of %u MB, %llu waiting to be unmapped; %llu MB uploaded, %llu units mapped and %llu unmapped in %llu rounds in total",
-                             g_sp_n, (unsigned long long)g_sp_ntiles, (unsigned long long)(g_sp_ntiles * SP_TILE >> 20), live, (unsigned)(SP_CHUNK * SP_TILE >> 20), (unsigned long long)g_sp_npend,
+    uint64_t units = 0; for (int i = 0; i < g_sp_n; i++) units += g_sp[i]->mapped;
+    if (g_sp_n || live) MLOG("Metal sparse textures: %d, %llu tiles mapped (%llu MB) for %llu mapped units, %u tiles shared by physical page, in %d heaps of %u MB, %llu waiting to be unmapped; %llu MB uploaded, %llu units mapped and %llu unmapped in %llu rounds in total",
+                             g_sp_n, (unsigned long long)g_sp_ntiles, (unsigned long long)(g_sp_ntiles * SP_TILE >> 20), (unsigned long long)units, g_sp_nsh, live, (unsigned)(SP_CHUNK * SP_TILE >> 20), (unsigned long long)g_sp_npend,
                              (unsigned long long)(g_sp_up_bytes >> 20), (unsigned long long)g_sp_maps, (unsigned long long)g_sp_unmaps, (unsigned long long)g_sp_rounds);
     pthread_mutex_unlock(&g_sp_mu);
 }
