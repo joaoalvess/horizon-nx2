@@ -69,6 +69,7 @@ enum {
     RO_T_ADDR, RO_T_TEX, RO_T_SAMP,
     RO_LABEL, RO_R_TS, RO_C_TS,   // diagnostics: DM_NVN_ENC_LABEL, DM_NVN_GPUPROF
     RO_NOTE,   // a[0] an _Atomic uint64_t, a[1] a value: the encode thread has made every call before this one (rec_note_wait)
+    RO_SPARSE_MAP,
 };
 typedef struct { uint32_t op, nobj; uint64_t a[15]; } rec_t;   // the first nobj slots hold retained objects (0 for nil), released once the call is made
 enum { REC_BLK = 256 };
@@ -169,6 +170,8 @@ static void rec_exec(const rec_t *r) {
     case RO_R_TS: [(id<MTL4RenderCommandEncoder>)e writeTimestampWithGranularity:a[1] afterStage:a[2] intoHeap:rec_id(a[0]) atIndex:a[3]]; break;
     case RO_C_TS: [(id<MTL4ComputeCommandEncoder>)e writeTimestampWithGranularity:a[1] intoHeap:rec_id(a[0]) atIndex:a[2]]; break;
     case RO_NOTE: { _Atomic uint64_t *p = (_Atomic uint64_t *)(uintptr_t)a[0]; pthread_mutex_lock(&g_note_mu); if (a[1] > atomic_load(p)) atomic_store(p, a[1]); pthread_cond_broadcast(&g_note_cv); pthread_mutex_unlock(&g_note_mu); break; }
+    case RO_SPARSE_MAP: { MTL4UpdateSparseTextureMappingOperation *o = (MTL4UpdateSparseTextureMappingOperation *)(uintptr_t)a[3]; if (a[2]) { [g_q4 signalEvent:rec_id(a[2]) value:a[5]]; [g_q4 waitForEvent:rec_id(a[2]) value:a[5]]; }
+        [g_q4 updateTextureMappings:rec_id(a[0]) heap:rec_id(a[1]) operations:o count:a[4]]; free(o); break; }
     default: MDIE("deferred encoding: unknown record %u", r->op);
     }
     for (uint32_t i = 0; i < r->nobj; i++) if (a[i]) CFRelease((CFTypeRef)(uintptr_t)a[i]);
@@ -337,3 +340,13 @@ static void rec_commit_upload(id cb, MTL4CommitOptions *o) {
     if (o) [g_q4 commit:buffers count:1 options:o]; else [g_q4 commit:buffers count:1];
 }
 static void rec_signal(id ev, uint64_t v) { if (rec_on() && g_rb_started) { rec_t *r = rec_put(RO_SIGNAL, 1); r->a[0] = rec_obj(ev); r->a[1] = v; } else [g_q4 signalEvent:ev value:v]; }
+static void rec_sparse_map(id<MTLTexture> tex, id<MTLHeap> heap, const MTL4UpdateSparseTextureMappingOperation *ops, size_t n, id<MTLEvent> after, uint64_t v) {
+    if (!n) return;
+    if (rec_on() && g_rb_started) {
+        MTL4UpdateSparseTextureMappingOperation *o = malloc(n * sizeof *o); if (!o) MDIE("deferred encoding: out of memory");
+        memcpy(o, ops, n * sizeof *o);
+        rec_t *r = rec_put(RO_SPARSE_MAP, 3); r->a[0] = rec_obj(tex); r->a[1] = rec_obj(heap); r->a[2] = rec_obj(after); r->a[3] = (uint64_t)(uintptr_t)o; r->a[4] = n; r->a[5] = v; return;
+    }
+    if (after) { [g_q4 signalEvent:after value:v]; [g_q4 waitForEvent:after value:v]; }
+    [g_q4 updateTextureMappings:tex heap:heap operations:ops count:n];
+}

@@ -253,7 +253,7 @@ NVN(nvnMemoryPoolInitialize, NVNboolean, NVNmemoryPool *p, const NVNmemoryPoolBu
 static void fl_add(const uint8_t *a, uint64_t n); static void fl_drop(const uint8_t *a, uint64_t n);   // flushed ranges, see nvn_flushed
 NVN(nvnMemoryPoolFinalize, void, NVNmemoryPool *p) {
     // Dead to the replay first (its IDs marked gone under g_rmu, the magic cleared), then torn down: a texture resolving on the submit thread must not find the page table or the storage already gone
-    mtl_alias_drop_pool(p); ((pool_t *)p)->magic = 0;
+    mtl_alias_drop_pool(p); ((pool_t *)p)->magic = 0; mtl_sparse_drop_pool(p);
     if (((pool_t *)p)->flags & 0x200 && ((pool_t *)p)->vp) vpool_release((pool_t *)p);
     if (((pool_t *)p)->mem && !(((pool_t *)p)->flags & 0x200)) {   // A virtual pool's storage is borrowed from a physical pool; do not unregister it
  nvn_dirty_remove_range(((pool_t *)p)->mem); mtl_pool_del(((pool_t *)p)->mem); fl_drop(((pool_t *)p)->mem, ((pool_t *)p)->size); } }
@@ -2106,7 +2106,8 @@ _Static_assert(sizeof(map_req) == 0x28, "NVNmappingRequest");
 // mapping) and the later mappings were refused (`[RED] MapVirtual: non-contiguous mapping`). A pool larger than the application pool is sparse from the start
 enum { NVRUN = 1024, VPT_LEAF = 512 };   // a page-table leaf covers 2 MB
 typedef struct { const uint8_t *phys; uint64_t gen; } vpte;
-struct vpool { const pool_t *pool; uint8_t *base; uint64_t len, size, top; int nrun; struct { uint64_t lo, hi; } run[NVRUN]; vpte **pt; };   // len: reserved; size: the pool's; top: highest mapped end so far (logged per 128 MB)
+struct vpool { const pool_t *pool; uint8_t *base; uint64_t len, size, top; int nrun; struct { uint64_t lo, hi; } run[NVRUN]; vpte **pt;
+               struct vchg { uint64_t lo, hi, gen; } *chg; uint64_t nchg, tail, lost, cap; };
 static struct vpool **g_vp; static int g_nvp, g_cvp;   // the pools with a range of their own, under g_vp_mu
 static pthread_mutex_t g_vp_mu = PTHREAD_MUTEX_INITIALIZER;
 static _Atomic uint64_t g_vp_gen;   // bumped per mapping request
@@ -2138,7 +2139,7 @@ static void vpool_drop(pool_t *o) {   // caller holds g_vp_mu
     munmap(v->base, v->len);
     for (uint64_t l = 0; l < (v->size + (2u << 20) - 1) >> 21; l++) free(v->pt[l]);
     for (int i = 0; i < g_nvp; i++) if (g_vp[i] == v) { g_vp[i] = g_vp[g_nvp - 1]; __atomic_store_n(&g_nvp, g_nvp - 1, __ATOMIC_RELEASE); break; }
-    free(v->pt); free(v); o->vp = NULL;
+    free(v->pt); free(v->chg); free(v); o->vp = NULL;
 }
 static void vpool_release(pool_t *o) { pthread_mutex_lock(&g_vp_mu); vpool_drop(o); pthread_mutex_unlock(&g_vp_mu); }
 // Mapped runs of a sparse pool: [lo, hi) sorted, disjoint, adjacent runs merged. Caller holds g_vp_mu
@@ -2159,7 +2160,7 @@ static void vrun_set(struct vpool *v, uint64_t lo, uint64_t hi, int mapped) {
 }
 // Page table of a sparse pool (see above). Caller holds g_vp_mu
 static const vpte *vpt_get(const struct vpool *v, uint64_t o) { const vpte *l = v->pt[o >> 21]; return l ? &l[(o >> 12) & (VPT_LEAF - 1)] : NULL; }
-static void vpt_set(struct vpool *v, uint64_t voff, uint64_t size, const uint8_t *phys) {
+static uint64_t vpt_set(struct vpool *v, uint64_t voff, uint64_t size, const uint8_t *phys) {
     uint64_t gen = atomic_fetch_add(&g_vp_gen, 1) + 1;
     for (uint64_t o = 0; o < size; o += 0x1000) {
         vpte **l = &v->pt[(voff + o) >> 21];
@@ -2167,6 +2168,19 @@ static void vpt_set(struct vpool *v, uint64_t voff, uint64_t size, const uint8_t
         if (!*l && !(*l = calloc(VPT_LEAF, sizeof **l))) die("sparse pool page table allocation failed");
         (*l)[((voff + o) >> 12) & (VPT_LEAF - 1)] = (vpte){phys ? phys + o : NULL, gen};
     }
+    return gen;
+}
+enum { VCHG = 1024, VCHG_MAX = 1 << 18 };
+static void vchg_add(struct vpool *v, uint64_t lo, uint64_t hi, uint64_t gen) {
+    struct vchg *e = v->nchg > v->tail ? &v->chg[(v->nchg - 1) & (v->cap - 1)] : NULL;
+    if (e && lo <= e->hi && hi >= e->lo) { if (lo < e->lo) e->lo = lo; if (hi > e->hi) e->hi = hi; e->gen = gen; return; }
+    if (v->nchg - v->tail == v->cap && v->cap < VCHG_MAX) {
+        struct vchg *n = malloc(2 * v->cap * sizeof *n); if (!n) die("sparse pool change log allocation failed");
+        for (uint64_t i = v->tail; i < v->nchg; i++) n[i & (2 * v->cap - 1)] = v->chg[i & (v->cap - 1)];
+        free(v->chg); v->chg = n; v->cap *= 2;
+    }
+    if (v->nchg - v->tail == v->cap) { e = &v->chg[v->tail++ & (v->cap - 1)]; if (e->gen > v->lost) v->lost = e->gen; }
+    v->chg[v->nchg++ & (v->cap - 1)] = (struct vchg){lo, hi, gen};
 }
 static int vpool_map(struct vpool *v, const map_req *r) {   // caller holds g_vp_mu; → 0 on failure
     uint64_t pg = (uint64_t)getpagesize();
@@ -2174,7 +2188,8 @@ static int vpool_map(struct vpool *v, const map_req *r) {   // caller holds g_vp
     if (((uint64_t)r->voff | r->size | (uint64_t)r->poff) & 0xFFF) { LOG("[RED] virtual pool %p: request %#llx+%#llx (physical offset %#llx) is not 4 KB aligned", (const void *)v->pool, (unsigned long long)r->voff, (unsigned long long)r->size, (unsigned long long)r->poff); return 0; }
     const pool_t *ph = (const pool_t *)r->phys;
     if (ph && (!ph->mem || r->poff < 0 || (uint64_t)r->poff + r->size > ph->size)) { LOG("[RED] virtual pool %p: physical pool %p (%#llx bytes, storage %p) cannot supply %#llx+%#llx", (const void *)v->pool, (const void *)ph, (unsigned long long)ph->size, (void *)ph->mem, (unsigned long long)r->poff, (unsigned long long)r->size); return 0; }
-    vpt_set(v, (uint64_t)r->voff, r->size, ph ? ph->mem + r->poff : NULL);
+    uint64_t gen = vpt_set(v, (uint64_t)r->voff, r->size, ph ? ph->mem + r->poff : NULL);
+    if (v->chg) vchg_add(v, (uint64_t)r->voff, (uint64_t)r->voff + r->size, gen);
     vm_address_t to = (vm_address_t)(v->base + r->voff);
     // Not aliased (see above): only textures read through the page table see it; the GPU cannot address it directly
     if ((uint64_t)r->voff + r->size > v->len || ((uintptr_t)to | r->size | (uint64_t)r->voff) & (pg - 1) || (ph && (((uintptr_t)ph->mem + (uintptr_t)r->poff) & (pg - 1)))) {
@@ -2669,6 +2684,62 @@ int nvn_sparse_mapped(const void *pool, uint64_t a, uint64_t n) {   // every pag
     pthread_mutex_unlock(&g_vp_mu); return ok;
 }
 void nvn_sparse_protect(const void *pool, uint64_t a, uint64_t n) { vpt_walk(pool, a, n, ~0ull, run_protect, 0); }
+void nvn_sparse_watch(const void *pool) {
+    pthread_mutex_lock(&g_vp_mu); struct vpool *v = pool ? ((const pool_t *)pool)->vp : NULL;
+    if (v && !v->chg) { if (!(v->chg = calloc(VCHG, sizeof *v->chg))) die("sparse pool change log allocation failed"); v->cap = VCHG; }
+    pthread_mutex_unlock(&g_vp_mu);
+}
+int nvn_sparse_changes(const void *pool, uint64_t gen, uint64_t (*out)[2], int max, uint64_t *at) {
+    pthread_mutex_lock(&g_vp_mu); struct vpool *v = pool ? ((const pool_t *)pool)->vp : NULL; int n = 0;
+    if (!v || !v->chg || v->lost > gen) { pthread_mutex_unlock(&g_vp_mu); return -1; }
+    uint64_t i = *at > v->tail ? *at : v->tail;
+    for (; i < v->nchg && n < max; i++) { const struct vchg *e = &v->chg[i & (v->cap - 1)];
+        if (e->gen <= gen) continue;
+        out[n][0] = (uint64_t)(uintptr_t)v->base + e->lo; out[n][1] = (uint64_t)(uintptr_t)v->base + e->hi; n++; }
+    *at = i;
+    pthread_mutex_unlock(&g_vp_mu); return n;
+}
+void nvn_sparse_trim(const void *pool, uint64_t gen) {
+    pthread_mutex_lock(&g_vp_mu); struct vpool *v = pool ? ((const pool_t *)pool)->vp : NULL;
+    for (; v && v->chg && v->tail < v->nchg; v->tail++) { const struct vchg *e = &v->chg[v->tail & (v->cap - 1)];
+        if (e->gen > gen) break;
+        if (e->gen > v->lost) v->lost = e->gen; }
+    pthread_mutex_unlock(&g_vp_mu);
+}
+void nvn_sparse_units(const void *pool, int n, const uint64_t *a, const uint64_t *len, uint32_t *mapped, uint64_t *key, const uint8_t **phys) {
+    pthread_mutex_lock(&g_vp_mu); struct vpool *v = pool ? ((const pool_t *)pool)->vp : NULL;
+    for (int i = 0; i < n; i++) {
+        uint64_t k = 1469598103934665603ull; uint32_t m = 0; const uint8_t *p0 = NULL; int run = 1;
+        for (uint64_t o = 0; v && o < len[i]; o += 0x1000) {
+            uint64_t at = a[i] + o - (uint64_t)(uintptr_t)v->base;
+            const vpte *e = a[i] + o >= (uint64_t)(uintptr_t)v->base && at < v->size ? vpt_get(v, at) : NULL;
+            const uint8_t *p = e ? e->phys : NULL;
+            k = (k ^ (uint64_t)(uintptr_t)p) * 1099511628211ull;
+            if (!p) { run = 0; continue; }
+            if (!m) p0 = p; else if (p != p0 + o) run = 0;
+            m++;
+        }
+        mapped[i] = m; key[i] = m ? k : 0; phys[i] = m && run && p0 && !(a[i] & 0xFFF) ? p0 : NULL;
+    }
+    pthread_mutex_unlock(&g_vp_mu);
+}
+void nvn_sparse_written(const void *pool, int n, const uint64_t *a, const uint64_t *len, uint64_t stamp, uint8_t *out) {
+    pthread_mutex_lock(&g_vp_mu); struct vpool *v = pool ? ((const pool_t *)pool)->vp : NULL;
+    for (int i = 0; i < n; i++) {
+        const uint8_t *rs = NULL, *re = NULL; int w = 0;
+        for (uint64_t o = 0; v && !w && o < len[i]; o += 0x1000) {
+            uint64_t at = a[i] + o - (uint64_t)(uintptr_t)v->base;
+            const vpte *e = a[i] + o >= (uint64_t)(uintptr_t)v->base && at < v->size ? vpt_get(v, at) : NULL;
+            if (!e || !e->phys) continue;
+            if (rs && e->phys == re) { re += 0x1000; continue; }
+            if (rs) w = nvn_dirty_since(rs, (size_t)(re - rs), stamp);
+            rs = e->phys; re = rs + 0x1000;
+        }
+        if (!w && rs) w = nvn_dirty_since(rs, (size_t)(re - rs), stamp);
+        out[i] = (uint8_t)w;
+    }
+    pthread_mutex_unlock(&g_vp_mu);
+}
 NVN(nvnCommandBufferDrawElementsIndirect, void, NVNcommandBuffer *c, NVNdrawPrimitive pr, NVNindexType it, NVNbufferAddress ib, NVNbufferAddress ind) {
     rec_draw_idx(c, (p_draw_idx){pr, it, 0, 0, 0, 1, ib, ind});
 }
