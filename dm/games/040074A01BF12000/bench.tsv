@@ -1,0 +1,5 @@
+# Benchmark routes for scripts/bench.py: name, DM_KEYS (seconds from host start), measuring window start and length (s), description.
+# From an empty save (--save of an empty folder) with the pipeline archive of an earlier start (--pso-archive <id>_build/run/pso_archive): the A presses take the autosave notice and
+# Normal Mode; the opening cutscene runs from about 20 s to about 70 s, then the first scene waits on its "Y Punch" prompt (on a MacBook Air M4)
+opening	15:A*10/3	25	100	the opening cutscene, then the first scene standing at its prompt
+probe	15:A*10/3	20	110	the same, for finding the times (screenshots)
