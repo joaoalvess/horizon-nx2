@@ -892,6 +892,14 @@ Finding, keying and translating shaders (`dm/gfx/tools/shader_split.py`, `dmsh_b
 - **Found on:** [Pokémon Pokopia](../../dm/games/0400A3A01EE4C000/README.md): 10,177 instructions in 7,590 programs. The fix made no visible difference in its tutorial area.
 - **Check:** `DMSH_TEST_XLATE=<translator> python3 dm/gfx/tests/test_dmsh_ampere_mem.py`.
 
+### LDC with a segmented address (.IS)
+
+- **Symptom:** `LDC with a bindless bank or an address mode` in the shader build; the shader is left out and its draws skipped.
+- **Cause:** LDC's address mode (bits 78..80, Mesa NAK's `LdcMode`) `.IS` (2) and `.ISL` (3) add Ra's high half to the bank and keep its low half as the offset, as Ryujinx's Maxwell `Ldc` does, so the bank is chosen at run time. The translator asks `QueryConstantBufferUse` which banks such a load may reach, and `dmsh_xlate` answered 0: no bank in use, so the load read nothing.
+- **Fix:** `ALdc` in `InstEmitAmpereAlu.cs` takes the bank as an operand, and `Program.cs` translates twice: the first translation records that the question was asked, and `Main` translates again, answering with the banks the program reads with a fixed bank and with c1, its own constants (`ConstantBanksOf`). `.IL` (1) and a bindless bank are refused. Maxwell's `.IS` has the same gap, not met in a game. A chain change.
+- **Found on:** [Pokémon Pokopia](../../dm/games/0400A3A01EE4C000/README.md#shaders): the vertex shader `cc679c7b4d3e703c` reads a 5-entry table in c1, `(-1, 1), (1, 1), (0, 0), (-1, -1), (1, -1)`, at `R0 = (vid % 5) * 8 + 0x10000`; its bank is now chosen among c1 and c3.
+- **Check:** `DMSH_TEST_XLATE=<translator> python3 dm/gfx/tests/test_dmsh_ampere_alu.py` (`LdcSegmented`).
+
 ### Ampere instructions new in Pokémon Pokopia
 
 - **Symptom:** `Ampere instruction <op> at 0x… is not implemented`, `F2FP.MERGE_C` or `F2I from a float that is not 32-bit` in the shader build; those shaders are left out and their draws and dispatches skipped.

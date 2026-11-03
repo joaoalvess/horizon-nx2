@@ -35,7 +35,7 @@ static class SwshXlate
     {
         readonly byte[] _code; readonly JsonObject _job; int _binding = 1; public readonly List<string> Notes = new();
         readonly byte[] _c1;
-        public Accessor(byte[] code, JsonObject job, Dictionary<int, SamplerType> imageTypes = null) { if (job["geometry_topology"] != null) _binding = 40; _code = code; _job = job; _c1 = job["c1"] is JsonNode h ? Convert.FromHexString((string)h) : Array.Empty<byte>(); _imageTypes = imageTypes; }
+        public Accessor(byte[] code, JsonObject job, Dictionary<int, SamplerType> imageTypes = null, uint constantBanks = 0) { if (job["geometry_topology"] != null) _binding = 40; _code = code; _job = job; _c1 = job["c1"] is JsonNode h ? Convert.FromHexString((string)h) : Array.Empty<byte>(); _imageTypes = imageTypes; _constantBanks = constantBanks; }
         // A texture query on an image handle (TXQ on c2 0x120 + 8 r: Unreal's GetDimensions on the RWTexture3D a compute shader writes) asks the type of that handle, which a table built
         // without the game's PC shaders does not answer, and the 2D default took a 3D image's depth from its width. The shader's own surface instructions give the image's type: the
         // first translation records that a query went unanswered (ImageQueryGuessed), and Main translates again with the types of the images it found, by c2 handle (ImageTypesOf)
@@ -48,6 +48,12 @@ static class SwshXlate
         }
         // c1 constant segment (the 0x100 bytes before the control segment in the shader package): the jump table of indirect jump BRX lives here (LDC c[1]); without it the translator cannot resolve jump targets and control flow goes wrong (particle shaders loop forever)
         public int QueryConstantBuffer1Size() => _c1.Length;
+        // A constant load whose bank is chosen at run time (LDC .IS / .ISL: the bank plus Ra's high half) selects among the banks this names, and none answered nothing (the load read 0).
+        // The first translation records that one was asked (ConstantBankQueried), and Main translates again naming the banks the program reads with a fixed bank and c1, its own
+        // constants (ConstantBanksOf): Pokémon Pokopia's vertex shader cc679c7b4d3e703c reads a table in c1 so
+        readonly uint _constantBanks; public bool ConstantBankQueried;
+        public uint QueryConstantBufferUse() { ConstantBankQueried = true; return _constantBanks; }
+        public static uint ConstantBanksOf(ShaderProgram p) { uint m = 1u << 1; foreach (var b in p.Info.CBuffers) if (b.Slot is >= 0 and < 32) m |= 1u << b.Slot; return m; }
         public int[] QueryAmpereComputeC0Layout() => _job["nvn2_cs"] is JsonArray l ? l.Select(v => (int)v).ToArray() : null;
         public uint ConstantBuffer1Read(int offset) { if (offset >= 0 && offset + 4 <= _c1.Length) return BitConverter.ToUInt32(_c1, offset); Notes.Add($"c1 read out of bounds +{offset:X} (c1 length {_c1.Length})"); return 0; }
         // All resources go into set 0, each with a distinct binding number (spirv-cross emits them as one argument buffer); the translator's convention of giving the buffer of constant segment number index binding = index+1 is not relied on
@@ -184,16 +190,24 @@ static class SwshXlate
                     ctx = Translator.CreateContext(0, acc, new TranslationOptions(TargetLanguage.Spirv, TargetApi.Vulkan, flags));
                     p = ctx.Translate(geometry);
                 }
+                uint banks = 0;
+                if (acc.ConstantBankQueried)   // a constant bank chosen at run time: again with the banks the program reads and c1 (see Accessor)
+                {
+                    banks = Accessor.ConstantBanksOf(p); acc = new Accessor(code, job, imageTypes, banks);
+                    ctx = Translator.CreateContext(0, acc, new TranslationOptions(TargetLanguage.Spirv, TargetApi.Vulkan, flags));
+                    p = ctx.Translate(geometry);
+                    acc.Notes.Add($"constant bank chosen at run time among c{string.Join(", c", Enumerable.Range(0, 32).Where(i => (banks >> i & 1) != 0))}");
+                }
                 if (UsesFloat64(p.BinaryCode))   // Tears of the Kingdom 1.4.3: 30 shaders used double and failed in the Metal compiler
                 {
-                    job["softfloat64"] = true; acc = new Accessor(code, job, imageTypes);
+                    job["softfloat64"] = true; acc = new Accessor(code, job, imageTypes, banks);
                     ctx = Translator.CreateContext(0, acc, new TranslationOptions(TargetLanguage.Spirv, TargetApi.Vulkan, flags));
                     p = ctx.Translate(geometry); acc.Notes.Add("FP64 lowered to FP32 (DoubleToFloat)");
                 }
                 if (geometry)
                 {
                     // A fresh context: translation mutates the decoded program.
-                    var reader = Translator.CreateContext(0, new Accessor(code, job, imageTypes), new TranslationOptions(TargetLanguage.Spirv, TargetApi.Vulkan, flags));
+                    var reader = Translator.CreateContext(0, new Accessor(code, job, imageTypes, banks), new TranslationOptions(TargetLanguage.Spirv, TargetApi.Vulkan, flags));
                     File.WriteAllBytes(Path.Combine(outDir, key + ".reader.spv"), reader.GenerateVertexPassthroughForCompute().BinaryCode);
                 }
                 File.WriteAllBytes(Path.Combine(outDir, key + ".spv"), VertexCounterLowering.Apply(code, (string)job["stage"], p.BinaryCode, acc.Notes));

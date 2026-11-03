@@ -1,3 +1,4 @@
+using System;
 using Ryujinx.Graphics.Shader.IntermediateRepresentation;
 
 using static Ryujinx.Graphics.Shader.IntermediateRepresentation.OperandHelper;
@@ -46,6 +47,10 @@ namespace Ryujinx.Graphics.Shader.Translation.Optimizations
 
                 case Instruction.Multiply:
                     TryEliminateBinaryOpCommutative(operation, 1);
+                    break;
+
+                case Instruction.FP32 | Instruction.Multiply:
+                    TryEliminatePerspectiveRoundTrip(operation);
                     break;
 
                 case Instruction.ShiftLeft:
@@ -221,6 +226,38 @@ namespace Ryujinx.Graphics.Shader.Translation.Optimizations
             Operand source = operation.GetSource(srcIndex);
 
             operation.TurnIntoCopy(source);
+        }
+
+        private static void TryEliminatePerspectiveRoundTrip(Operation operation)
+        {
+            for (int i = 0; i < 2; i++)
+            {
+                if (operation.GetSource(i).AsgOp is not Operation scaled || scaled.Inst != (Instruction.FP32 | Instruction.Multiply) ||
+                    operation.GetSource(1 - i).AsgOp is not Operation reciprocal || reciprocal.Inst != (Instruction.FP32 | Instruction.Divide) ||
+                    !IsConstEqual(reciprocal.GetSource(0), BitConverter.SingleToInt32Bits(1f)) || !IsFragmentW(reciprocal.GetSource(1)))
+                {
+                    continue;
+                }
+
+                for (int j = 0; j < 2; j++)
+                {
+                    if (IsFragmentW(scaled.GetSource(j)))
+                    {
+                        operation.TurnIntoCopy(scaled.GetSource(1 - j));
+                        return;
+                    }
+                }
+            }
+        }
+
+        private static bool IsFragmentW(Operand operand)
+        {
+            return operand.AsgOp is Operation load &&
+                load.Inst == Instruction.Load &&
+                load.StorageKind == StorageKind.Input &&
+                load.SourcesCount == 2 &&
+                IsConstEqual(load.GetSource(0), (int)IoVariable.FragmentCoord) &&
+                IsConstEqual(load.GetSource(1), 3);
         }
 
         private static bool IsConstEqual(Operand operand, int comparand)

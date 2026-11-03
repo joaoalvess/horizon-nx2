@@ -616,37 +616,46 @@ namespace Ryujinx.Graphics.Shader.Instructions
 
             if (x.Opcode == 0xabb)
             {
-                ALoadConstant(context, x, x.Bits(54, 59), Register(x.Bits(24, 30), RegisterType.Uniform), (int)x.SignedField(38, 54), uniform: true);
+                ALoadConstant(context, x, Const(x.Bits(54, 59)), Register(x.Bits(24, 30), RegisterType.Uniform), (int)x.SignedField(38, 54), uniform: true);
             }
             else
             {
                 (int bank, int offset) = AMapC0(context, x.Bits(54, 59), (int)x.SignedField(38, 54));
-                ALoadConstant(context, x, bank, Const(0), offset, uniform: true);
+                ALoadConstant(context, x, Const(bank), Const(0), offset, uniform: true);
             }
         }
 
-        // LDC Rd, c[bank][Ra + offset]
+        // LDC Rd, c[bank][Ra + offset]. Address mode 78..80 (Mesa NAK's LdcMode): .IS (2) and .ISL (3) add Ra's high half to the bank and keep its low half as the offset, as
+        // Maxwell's Ldc; the bank is then chosen at run time among those QueryConstantBufferUse names. Pokémon Pokopia's vertex shader cc679c7b4d3e703c reads a 5-entry table in its
+        // c1 so (LDC.64 R8, c[0x0][R0].IS, R0 = vid % 5 * 8 + 0x10000). .IL (1) and the bindless bank (91) are not met in a game: refused
         public static void ALdc(EmitterContext context)
         {
             AmpereOp x = new(context.CurrOp);
+            int mode = x.Bits(78, 80);
 
-            if (x.Bit(91) || x.Bits(78, 80) != 0)
+            if (x.Bit(91) || mode == 1)
             {
-                throw AFail(context, "LDC with a bindless bank or an address mode");
+                throw AFail(context, $"LDC with a bindless bank or address mode {mode}");
             }
 
-            if (x.Ra == RegisterConsts.RegisterZeroIndex)
+            if (mode != 0)
+            {
+                Operand ra = Register(x.Ra, RegisterType.Gpr);
+                Operand slot = context.IAdd(Const(x.Bits(54, 59)), context.ShiftRightU32(ra, Const(16)));
+                ALoadConstant(context, x, slot, context.BitwiseAnd(ra, Const(0xffff)), (int)x.SignedField(38, 54), uniform: false);
+            }
+            else if (x.Ra == RegisterConsts.RegisterZeroIndex)
             {
                 (int bank, int offset) = AMapC0(context, x.Bits(54, 59), (int)x.SignedField(38, 54));
-                ALoadConstant(context, x, bank, Const(0), offset, uniform: false);
+                ALoadConstant(context, x, Const(bank), Const(0), offset, uniform: false);
             }
             else
             {
-                ALoadConstant(context, x, x.Bits(54, 59), Register(x.Ra, RegisterType.Gpr), (int)x.SignedField(38, 54), uniform: false);
+                ALoadConstant(context, x, Const(x.Bits(54, 59)), Register(x.Ra, RegisterType.Gpr), (int)x.SignedField(38, 54), uniform: false);
             }
         }
 
-        private static void ALoadConstant(EmitterContext context, AmpereOp x, int bank, Operand index, int offset, bool uniform)
+        private static void ALoadConstant(EmitterContext context, AmpereOp x, Operand slot, Operand index, int offset, bool uniform)
         {
             int size = x.Bits(73, 76);
 
@@ -662,7 +671,7 @@ namespace Ryujinx.Graphics.Shader.Instructions
 
             for (int k = 0; k < (size == 5 ? 2 : 1) && rd + k < zero; k++)
             {
-                Operand value = EmitLoadConstant(context, Const(bank), context.IAdd(wordOffset, Const(k)));
+                Operand value = EmitLoadConstant(context, slot, context.IAdd(wordOffset, Const(k)));
 
                 if (size < 4)
                 {
@@ -1150,36 +1159,68 @@ namespace Ryujinx.Graphics.Shader.Instructions
             Operand srcA = AGet(context, a);
             Operand sel = AGet(context, b);
             Operand srcC = AGet(context, c);
+
+            if (sel.Type == OperandType.Constant)
+            {
+                ASet(context, x, APrmtConstant(context, srcA, srcC, sel.Value), u);
+                return;
+            }
+
             Operand res = Const(0);
 
             for (int i = 0; i < 4; i++)
             {
-                Operand byteValue;
-
-                if (sel.Type == OperandType.Constant)
-                {
-                    int s = (sel.Value >> (i * 4)) & 0xf;
-                    Operand src = (s & 4) != 0 ? srcC : srcA;
-                    byteValue = context.BitfieldExtractU32(src, Const((s & 3) * 8), Const(8));
-
-                    if ((s & 8) != 0)
-                    {
-                        byteValue = context.ShiftRightS32(context.ShiftLeft(byteValue, Const(24)), Const(31));
-                    }
-                }
-                else
-                {
-                    Operand s = context.BitfieldExtractU32(sel, Const(i * 4), Const(4));
-                    Operand src = context.ConditionalSelect(context.ICompareNotEqual(context.BitwiseAnd(s, Const(4)), Const(0)), srcC, srcA);
-                    byteValue = context.BitfieldExtractU32(src, context.ShiftLeft(context.BitwiseAnd(s, Const(3)), Const(3)), Const(8));
-                    Operand sign = context.ShiftRightS32(context.ShiftLeft(byteValue, Const(24)), Const(31));
-                    byteValue = context.ConditionalSelect(context.ICompareNotEqual(context.BitwiseAnd(s, Const(8)), Const(0)), sign, byteValue);
-                }
+                Operand s = context.BitfieldExtractU32(sel, Const(i * 4), Const(4));
+                Operand src = context.ConditionalSelect(context.ICompareNotEqual(context.BitwiseAnd(s, Const(4)), Const(0)), srcC, srcA);
+                Operand byteValue = context.BitfieldExtractU32(src, context.ShiftLeft(context.BitwiseAnd(s, Const(3)), Const(3)), Const(8));
+                Operand sign = context.ShiftRightS32(context.ShiftLeft(byteValue, Const(24)), Const(31));
+                byteValue = context.ConditionalSelect(context.ICompareNotEqual(context.BitwiseAnd(s, Const(8)), Const(0)), sign, byteValue);
 
                 res = context.BitwiseOr(res, context.ShiftLeft(context.BitwiseAnd(byteValue, Const(0xff)), Const(i * 8)));
             }
 
             ASet(context, x, res, u);
+        }
+
+        private static Operand APrmtConstant(EmitterContext context, Operand srcA, Operand srcC, int sel)
+        {
+            Operand res = null;
+
+            for (int i = 0; i < 4;)
+            {
+                int s = (sel >> (i * 4)) & 0xf;
+                Operand src = (s & 4) != 0 ? srcC : srcA;
+                int k = s & 3;
+                int n = 1;
+                Operand part;
+
+                if ((s & 8) != 0)
+                {
+                    Operand byteValue = context.BitfieldExtractU32(src, Const(k * 8), Const(8));
+                    Operand sign = context.ShiftRightS32(context.ShiftLeft(byteValue, Const(24)), Const(31));
+                    part = context.ShiftLeft(context.BitwiseAnd(sign, Const(0xff)), Const(i * 8));
+                }
+                else
+                {
+                    while (i + n < 4 && k + n < 4 && ((sel >> ((i + n) * 4)) & 0xf) == s + n)
+                    {
+                        n++;
+                    }
+
+                    int shift = (i - k) * 8;
+                    part = shift > 0 ? context.ShiftLeft(src, Const(shift)) : shift < 0 ? context.ShiftRightU32(src, Const(-shift)) : src;
+
+                    if (Math.Min(i, k) > 0 || Math.Max(i, k) + n < 4)
+                    {
+                        part = context.BitwiseAnd(part, Const((int)(uint)(((1UL << (n * 8)) - 1) << (i * 8))));
+                    }
+                }
+
+                res = res == null ? part : context.BitwiseOr(res, part);
+                i += n;
+            }
+
+            return res;
         }
 
         // POPC Rd, b: bit count (63: of the bitwise not)

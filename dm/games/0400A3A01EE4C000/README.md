@@ -19,7 +19,7 @@ A Switch 2 game: update v655360 (the title screen says Ver. 2.0.1), SDK 20.5.25 
 
 ## Shaders
 
-- `cc679c7b4d3e703c` does not translate (`LDC with a bindless bank`). The boot loads it and logs a red line; it has not been seen drawing (open). The census also lists f55 three times, two more of that LDC and 16 BRX with no target (open).
+- `cc679c7b4d3e703c` reads a table in c1 through `LDC .IS` and translates ([LDC with a segmented address (.IS)](../../../docs/reference/shaders.md#ldc-with-a-segmented-address-is)). The census also lists f55 three times, two more of that LDC and 16 BRX with no target (open).
 - A `3D binding fallback` line fires once at about frame 2100: a 2D 8x8 texture in a 3D slot. The shader is not identified (open).
 
 ## Rendering
@@ -44,6 +44,7 @@ The first boot shows the language list: `A`, `LUp`, `A` picks English. The chara
 - [HADD2 and HMUL2 with an immediate](../../../docs/reference/shaders.md#hadd2-and-hmul2-with-an-immediate): the GPU hang and 88 ms frames.
 - [Scaled shared memory addresses](../../../docs/reference/shaders.md#scaled-shared-memory-addresses): stride 3 in use, on accesses of every size.
 - [HFMA2 .H0_NH1](../../../docs/reference/shaders.md#hfma2-h0_nh1).
+- [LDC with a segmented address (.IS)](../../../docs/reference/shaders.md#ldc-with-a-segmented-address-is): `cc679c7b4d3e703c`.
 - [Ampere instructions new in Pokémon Pokopia](../../../docs/reference/shaders.md#ampere-instructions-new-in-pokémon-pokopia).
 - [Integer buffer textures read through float slots](../../../docs/reference/rendering.md#integer-buffer-textures-read-through-float-slots).
 - [Present snapshots](../../../docs/reference/frame-rate.md#present-snapshots-the-games-swapchain-texture-free-at-once): 47 fps without them on a MacBook Air M4.

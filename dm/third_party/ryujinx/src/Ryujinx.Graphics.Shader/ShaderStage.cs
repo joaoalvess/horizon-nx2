@@ -19,8 +19,7 @@ namespace Ryujinx.Graphics.Shader
             /// <summary>
             /// Checks if the shader stage supports render scale.
             /// </summary>
-            public bool SupportsRenderScale =>
-                shaderStage is ShaderStage.Vertex or ShaderStage.Fragment or ShaderStage.Compute;
+            public bool SupportsRenderScale => false;
             
             /// <summary>
             /// Checks if the shader stage is vertex, tessellation or geometry.
