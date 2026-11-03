@@ -1,4 +1,5 @@
 using Ryujinx.Graphics.Shader.IntermediateRepresentation;
+using Ryujinx.Graphics.Shader.StructuredIr;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
@@ -121,6 +122,10 @@ namespace Ryujinx.Graphics.Shader.Translation.Optimizations
 
                                 modified = true;
                             }
+                            else if (operation.Inst == Instruction.UnpackHalf2x16 && PropagateHalfword(node))
+                            {
+                                modified = true;
+                            }
                         }
 
                         node = nextNode;
@@ -203,7 +208,7 @@ namespace Ryujinx.Graphics.Shader.Translation.Optimizations
 
             foreach (INode useNode in uses)
             {
-                if (useNode is not Operation operation || operation.Inst != Instruction.UnpackHalf2x16)
+                if (useNode is not Operation operation || operation.Inst != Instruction.UnpackHalf2x16 || operation.ForcePrecise)
                 {
                     continue;
                 }
@@ -217,6 +222,200 @@ namespace Ryujinx.Graphics.Shader.Translation.Optimizations
             }
 
             return modified;
+        }
+
+        // nxnative: an unpack of a word built from halfwords of other words (the halfword PRMTs, made explicit by InstEmitAmpereAlu.APrmtConstant: & 0xffff, & 0xffff0000,
+        // << 16, >> 16 and |) reads the halfword it takes from the word that holds it. The bits are the same, so the result is too. The new unpack is marked precise:
+        // PropagatePack must not take it on to the float a pack rounded to half (Pokemon Pokopia's 8743dd823fc8e863 rebuilds half pairs so 110 times)
+        private static bool PropagateHalfword(LinkedListNode<INode> node)
+        {
+            Operation unpack = (Operation)node.Value;
+            Operand source = unpack.GetSource(0);
+            (Operand word, int half) = HalfwordSource(source, unpack.Index, 0);
+
+            if (word == source && half == unpack.Index)
+            {
+                return false;
+            }
+
+            if (word == null)
+            {
+                unpack.TurnIntoCopy(OperandHelper.ConstF(0f));
+
+                return true;
+            }
+
+            Operation redirected = new(Instruction.UnpackHalf2x16, half, unpack.Dest, word)
+            {
+                ForcePrecise = true,
+            };
+
+            node.List.AddBefore(node, redirected);
+            Utils.DeleteNode(node, unpack);
+
+            return true;
+        }
+
+        // The word and the halfword of it whose bits halfword `half` of `value` has; a null word when they are all zero
+        private static (Operand, int) HalfwordSource(Operand value, int half, int depth)
+        {
+            if (value.Type == OperandType.Constant && (value.Value >> (half * 16) & 0xffff) == 0)
+            {
+                return (null, half);
+            }
+
+            if (depth == 8 || value.AsgOp is not Operation operation || operation.SourcesCount != 2)
+            {
+                return (value, half);
+            }
+
+            Operand a = operation.GetSource(0);
+            Operand b = operation.GetSource(1);
+
+            switch (operation.Inst)
+            {
+                case Instruction.BitwiseAnd when b.Type == OperandType.Constant && (b.Value == 0xffff || b.Value == unchecked((int)0xffff0000)):
+                    return (b.Value == 0xffff) == (half == 0) ? HalfwordSource(a, half, depth + 1) : (null, half);
+                case Instruction.ShiftLeft when b.Type == OperandType.Constant && b.Value == 16:
+                    return half == 1 ? HalfwordSource(a, 0, depth + 1) : (null, half);
+                case Instruction.ShiftRightU32 when b.Type == OperandType.Constant && b.Value == 16:
+                    return half == 0 ? HalfwordSource(a, 1, depth + 1) : (null, half);
+                case Instruction.BitwiseOr:
+                    (Operand, int) fromA = HalfwordSource(a, half, depth + 1);
+                    (Operand, int) fromB = HalfwordSource(b, half, depth + 1);
+
+                    return fromA.Item1 == null ? fromB : fromB.Item1 == null ? fromA : (value, half);
+            }
+
+            return (value, half);
+        }
+
+        // nxnative: shared memory past the host's threadgroup memory (ResourceManager.HostSharedMemorySize) that every invocation addresses as S words of its own, local
+        // invocation index * S + c with 0 <= c < S, in a program without barriers or atomics, becomes S words of private memory at c: no other invocation reads them.
+        // Pokemon Pokopia's froxel lighting kernels (8 x 8 x 4 invocations of 37 or 47 words, 37,888 and 48,128 bytes) had no pipeline on an Apple GPU before
+        public static void PrivatizeSharedMemory(IReadOnlyList<Function> functions, ResourceManager resourceManager, ShaderDefinitions definitions)
+        {
+            int id = resourceManager.SharedMemoryId;
+            int[] size = [definitions.ComputeLocalSizeX, definitions.ComputeLocalSizeY, definitions.ComputeLocalSizeZ];
+
+            if (definitions.Stage != ShaderStage.Compute || id < 0 || resourceManager.SharedMemorySize <= ResourceManager.HostSharedMemorySize || size[0] * size[1] * size[2] < 2)
+            {
+                return;
+            }
+
+            long[] unit = [size[0] > 1 ? 1 : 0, size[1] > 1 ? size[0] : 0, size[2] > 1 ? size[0] * size[1] : 0];
+            List<(LinkedListNode<INode>, int)> accesses = [];
+            long stride = 0;
+
+            foreach (Function function in functions)
+            {
+                foreach (BasicBlock block in function.Blocks)
+                {
+                    for (LinkedListNode<INode> node = block.Operations.First; node != null; node = node.Next)
+                    {
+                        if (node.Value is not Operation operation)
+                        {
+                            continue;
+                        }
+
+                        if (operation.Inst is Instruction.Barrier or Instruction.SubgroupBarrier or Instruction.MemoryBarrier or Instruction.GroupMemoryBarrier)
+                        {
+                            return;
+                        }
+
+                        if (operation.StorageKind != StorageKind.SharedMemory || operation.GetSource(0).Value != id)
+                        {
+                            continue;
+                        }
+
+                        long[] form = operation.Inst is Instruction.Load or Instruction.Store ? LinearInThreadId(operation.GetSource(1), size, 0) : null;
+                        long s = form == null ? 0 : unit[0] != 0 ? form[0] : unit[1] != 0 ? form[1] : form[2];
+
+                        if (s <= 0 || (stride != 0 && s != stride) || form[0] != s * unit[0] || form[1] != s * unit[1] || form[2] != s * unit[2] || form[3] < 0 || form[3] >= s)
+                        {
+                            return;
+                        }
+
+                        stride = s;
+                        accesses.Add((node, (int)form[3]));
+                    }
+                }
+            }
+
+            if (accesses.Count == 0 || stride * size[0] * size[1] * size[2] > resourceManager.Properties.SharedMemories[id].ArrayLength)
+            {
+                return;
+            }
+
+            int privateId = resourceManager.Properties.AddLocalMemory(new MemoryDefinition("shared_private", AggregateType.Array | AggregateType.U32, (int)stride));
+
+            foreach ((LinkedListNode<INode> node, int offset) in accesses)
+            {
+                Operation access = (Operation)node.Value;
+                Operation replacement = access.Inst == Instruction.Load
+                    ? new(Instruction.Load, StorageKind.LocalMemory, access.Dest, OperandHelper.Const(privateId), OperandHelper.Const(offset))
+                    : new(Instruction.Store, StorageKind.LocalMemory, null, OperandHelper.Const(privateId), OperandHelper.Const(offset), access.GetSource(2));
+
+                node.List.AddBefore(node, replacement);
+                Utils.DeleteNode(node, access);
+            }
+
+            resourceManager.RemoveCurrentSharedMemory();
+        }
+
+        // The value as x c[0] + y c[1] + z c[2] + c[3] over the local invocation ID, a component the workgroup does not span being 0; null for any other form, or one
+        // whose 32-bit arithmetic could wrap
+        private static long[] LinearInThreadId(Operand value, int[] size, int depth)
+        {
+            if (value.Type == OperandType.Constant)
+            {
+                return [0, 0, 0, value.Value];
+            }
+
+            if (depth == 16 || value.AsgOp is not Operation operation)
+            {
+                return null;
+            }
+
+            for (int k = 0; k < 3; k++)
+            {
+                if (Utils.IsInputLoad(operation, IoVariable.ThreadId, k))
+                {
+                    long[] component = [0, 0, 0, 0];
+                    component[k] = size[k] > 1 ? 1 : 0;
+
+                    return component;
+                }
+            }
+
+            if (operation.Inst == Instruction.Copy)
+            {
+                return LinearInThreadId(operation.GetSource(0), size, depth + 1);
+            }
+
+            if (operation.SourcesCount != 2 || LinearInThreadId(operation.GetSource(0), size, depth + 1) is not long[] a || LinearInThreadId(operation.GetSource(1), size, depth + 1) is not long[] b)
+            {
+                return null;
+            }
+
+            bool bConstant = b[0] == 0 && b[1] == 0 && b[2] == 0;
+            long[] result = operation.Inst switch
+            {
+                Instruction.Add => [a[0] + b[0], a[1] + b[1], a[2] + b[2], a[3] + b[3]],
+                Instruction.Subtract => [a[0] - b[0], a[1] - b[1], a[2] - b[2], a[3] - b[3]],
+                Instruction.Multiply when bConstant => [a[0] * b[3], a[1] * b[3], a[2] * b[3], a[3] * b[3]],
+                Instruction.Multiply when a[0] == 0 && a[1] == 0 && a[2] == 0 => [b[0] * a[3], b[1] * a[3], b[2] * a[3], b[3] * a[3]],
+                Instruction.ShiftLeft when bConstant && b[3] is >= 0 and < 31 => [a[0] << (int)b[3], a[1] << (int)b[3], a[2] << (int)b[3], a[3] << (int)b[3]],
+                Instruction.ShiftRightU32 when bConstant && b[3] is >= 0 and < 31 && a.All(v => v >= 0 && v % (1L << (int)b[3]) == 0) => [a[0] >> (int)b[3], a[1] >> (int)b[3], a[2] >> (int)b[3], a[3] >> (int)b[3]],
+                _ => null,
+            };
+
+            if (result == null || System.Math.Abs(result[0]) * size[0] + System.Math.Abs(result[1]) * size[1] + System.Math.Abs(result[2]) * size[2] + System.Math.Abs(result[3]) > int.MaxValue)
+            {
+                return null;
+            }
+
+            return result;
         }
 
         public static bool MatchDdxOrDdy(Operation operation)

@@ -352,10 +352,11 @@ namespace Ryujinx.Graphics.Shader.Instructions
             return stride == 0 ? ra : context.ShiftLeft(ra, Const(stride + 1));
         }
 
-        // The 32-bit address of a local / shared access: Ra by its stride, plus the uniform register (at urLo in the uniform form, bit 91)
-        private static Operand ALocalAddress(EmitterContext context, AmpereOp x, int urLo)
+        // The 32-bit address of a local / shared access: Ra by its stride (none for LDSM, whose 78..80 are its mode), plus the uniform register (at urLo in the uniform form, bit 91)
+        private static Operand ALocalAddress(EmitterContext context, AmpereOp x, int urLo, bool stride = true)
         {
-            Operand addr = x.Ra == RegisterConsts.RegisterZeroIndex ? Const(0) : AStride(context, x, Register(x.Ra, RegisterType.Gpr));
+            Operand ra = Register(x.Ra, RegisterType.Gpr);
+            Operand addr = x.Ra == RegisterConsts.RegisterZeroIndex ? Const(0) : stride ? AStride(context, x, ra) : ra;
 
             if (x.Bit(91) && x.Bits(urLo, urLo + 6) != RegisterConsts.UniformZeroIndex)
             {

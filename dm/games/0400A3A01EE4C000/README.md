@@ -49,3 +49,5 @@ The first boot shows the language list: `A`, `LUp`, `A` picks English. The chara
 - [Integer buffer textures read through float slots](../../../docs/reference/rendering.md#integer-buffer-textures-read-through-float-slots).
 - [Present snapshots](../../../docs/reference/frame-rate.md#present-snapshots-the-games-swapchain-texture-free-at-once): 47 fps without them on a MacBook Air M4.
 - [The Joy-Con mouse pointer](../../../docs/reference/services.md#the-joy-con-mouse-pointer) and [GameShare guest displays](../../../docs/reference/services.md#gameshare-guest-displays): boot aborts.
+- [Half pairs rebuilt from halves of other pairs](../../../docs/reference/shaders.md#half-pairs-rebuilt-from-halves-of-other-pairs): `8743dd823fc8e863`'s 107 halfword masks, shifts and ors, 18 left.
+- [Shared memory past 32 KB that each invocation uses alone](../../../docs/reference/shaders.md#shared-memory-past-32-kb-that-each-invocation-uses-alone): 64 of the 160 froxel lighting kernels over Metal's limit make their pipelines (the other 96 open).

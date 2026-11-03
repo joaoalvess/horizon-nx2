@@ -113,6 +113,59 @@ namespace Ryujinx.Graphics.Shader.Instructions
 
         private static Operand AGpr(int r) => r >= RegisterConsts.RegisterZeroIndex ? Const(0) : Register(r, RegisterType.Gpr);
 
+        private static int ASubgroups(ShaderDefinitions defs) => System.Math.Max(1, (defs.ComputeLocalSizeX * defs.ComputeLocalSizeY * defs.ComputeLocalSizeZ + 31) / 32);
+
+        // The word offset of this lane's subgroup's 256 words in the HMMA scratch (Metal SIMD-groups are 32 wide, as the warp, and take consecutive local invocation indices)
+        private static Operand ASubgroupBlock(EmitterContext context)
+        {
+            ShaderDefinitions defs = context.TranslatorContext.Definitions;
+            Operand tidX = context.Load(StorageKind.Input, IoVariable.ThreadId, null, Const(0));
+            Operand tidY = context.Load(StorageKind.Input, IoVariable.ThreadId, null, Const(1));
+            Operand tidZ = context.Load(StorageKind.Input, IoVariable.ThreadId, null, Const(2));
+            Operand flat = context.IAdd(tidX, context.IAdd(context.IMultiply(tidY, Const(defs.ComputeLocalSizeX)),
+                                                          context.IMultiply(tidZ, Const(defs.ComputeLocalSizeX * defs.ComputeLocalSizeY))));
+
+            return context.ShiftLeft(context.ShiftRightU32(flat, Const(5)), Const(8));
+        }
+
+        // The value each of the given lanes of the subgroup holds. In a compute shader every lane stores its value at its place in its subgroup's block of the HMMA scratch
+        // and, after a subgroup barrier, loads the ones it needs; a second barrier lets the next exchange or HMMA reuse the block. On an M4 that took 0.29 ns a SIMD-group
+        // for MOVM's two words against 0.58 by shuffles, and 0.51 against 2.33 for LDSM.x4.MT88's eight. Other stages, and a workgroup whose shared memory leaves no
+        // room for the scratch, shuffle
+        private static Operand[] AExchange(EmitterContext context, Operand value, Operand[] lanes)
+        {
+            ShaderDefinitions defs = context.TranslatorContext.Definitions;
+            int memoryId = defs.Stage == ShaderStage.Compute ? context.ResourceManager.TryGetHmmaScratchMemoryId(ASubgroups(defs)) : -1;
+            Operand[] values = new Operand[lanes.Length];
+
+            if (memoryId < 0)
+            {
+                for (int i = 0; i < lanes.Length; i++)
+                {
+                    values[i] = context.Shuffle(value, lanes[i]);
+                }
+
+                return values;
+            }
+
+            Operand block = ASubgroupBlock(context);
+
+            context.Store(StorageKind.SharedMemory, memoryId, context.IAdd(block, ALaneId(context)), value);
+
+            // LDSM and MOVM are .sync.aligned (PTX ldmatrix / movmatrix): every lane of the warp executes the same instruction, under a condition the same for the whole
+            // warp, so the whole SIMD-group reaches both barriers
+            context.SubgroupBarrier();
+
+            for (int i = 0; i < lanes.Length; i++)
+            {
+                values[i] = context.Load(StorageKind.SharedMemory, memoryId, context.IAdd(block, lanes[i]));
+            }
+
+            context.SubgroupBarrier();
+
+            return values;
+        }
+
         // The low (0) or high (1) half of a packed pair, as a float
         private static Operand AHalf(EmitterContext context, Operand packed, int half)
         {
@@ -140,15 +193,8 @@ namespace Ryujinx.Graphics.Shader.Instructions
 
             if (size == 1 && !f32 && defs.Stage == ShaderStage.Compute)
             {
-                int threads = defs.ComputeLocalSizeX * defs.ComputeLocalSizeY * defs.ComputeLocalSizeZ;
-                int memoryId = context.ResourceManager.GetHmmaScratchMemoryId(System.Math.Max(1, (threads + 31) / 32));
-
-                Operand tidX = context.Load(StorageKind.Input, IoVariable.ThreadId, null, Const(0));
-                Operand tidY = context.Load(StorageKind.Input, IoVariable.ThreadId, null, Const(1));
-                Operand tidZ = context.Load(StorageKind.Input, IoVariable.ThreadId, null, Const(2));
-                Operand flat = context.IAdd(tidX, context.IAdd(context.IMultiply(tidY, Const(defs.ComputeLocalSizeX)),
-                                                              context.IMultiply(tidZ, Const(defs.ComputeLocalSizeX * defs.ComputeLocalSizeY))));
-                Operand block = context.ShiftLeft(context.ShiftRightU32(flat, Const(5)), Const(8));   // the subgroup's 256 words (Metal SIMD-groups are 32 wide, as the warp)
+                int memoryId = context.ResourceManager.GetHmmaScratchMemoryId(ASubgroups(defs));
+                Operand block = ASubgroupBlock(context);
 
                 (Operand d0, Operand d1) = context.Add(Instruction.MatrixMultiplyAdd, (Local(), Local()), Const(memoryId), ALaneId(context), block,
                     AGpr(x.Ra), AGpr(x.Ra + 1), AGpr(x.Ra + 2), AGpr(x.Ra + 3), AGpr(x.Rb), AGpr(x.Rb + 1), AGpr(x.Rc), AGpr(x.Rc + 1));
@@ -254,19 +300,36 @@ namespace Ryujinx.Graphics.Shader.Instructions
                 throw AFail(context, $"LDSM mode {mode} count {count}");
             }
 
-            Operand addr = context.IAdd(ALocalAddress(context, x, 32), Const((int)x.SignedField(40, 64)));
+            Operand addr = context.IAdd(ALocalAddress(context, x, 32, stride: false), Const((int)x.SignedField(40, 64)));
             Operand lane = ALaneId(context);
             Operand g = context.ShiftRightU32(lane, Const(2));
             Operand t = context.BitwiseAnd(lane, Const(3));
             int id = context.ResourceManager.SharedMemoryId;
             Operand[] results = new Operand[count];
+            Operand[] rows = new Operand[mode == 0 ? count : 2 * count];
 
             for (int m = 0; m < count; m++)
             {
                 if (mode == 0)
                 {
-                    Operand rowAddr = context.Shuffle(addr, context.IAdd(g, Const(8 * m)));
-                    Operand byteOffset = context.IAdd(rowAddr, context.ShiftLeft(t, Const(2)));
+                    rows[m] = context.IAdd(g, Const(8 * m));
+                }
+                else
+                {
+                    for (int j = 0; j < 2; j++)
+                    {
+                        rows[2 * m + j] = context.IAdd(context.IAdd(context.ShiftLeft(t, Const(1)), Const(j)), Const(8 * m));
+                    }
+                }
+            }
+
+            Operand[] rowAddrs = AExchange(context, addr, rows);
+
+            for (int m = 0; m < count; m++)
+            {
+                if (mode == 0)
+                {
+                    Operand byteOffset = context.IAdd(rowAddrs[m], context.ShiftLeft(t, Const(2)));
                     results[m] = context.Load(StorageKind.SharedMemory, id, context.ShiftRightU32(byteOffset, Const(2)));
                 }
                 else
@@ -275,9 +338,7 @@ namespace Ryujinx.Graphics.Shader.Instructions
 
                     for (int j = 0; j < 2; j++)
                     {
-                        Operand row = context.IAdd(context.ShiftLeft(t, Const(1)), Const(j));
-                        Operand rowAddr = context.Shuffle(addr, context.IAdd(row, Const(8 * m)));
-                        Operand byteOffset = context.IAdd(rowAddr, context.ShiftLeft(g, Const(1)));
+                        Operand byteOffset = context.IAdd(rowAddrs[2 * m + j], context.ShiftLeft(g, Const(1)));
                         Operand word = context.Load(StorageKind.SharedMemory, id, context.ShiftRightU32(byteOffset, Const(2)));
                         h[j] = context.BitfieldExtractU32(word, context.ShiftLeft(context.BitwiseAnd(byteOffset, Const(2)), Const(3)), Const(16));
                     }
@@ -305,15 +366,21 @@ namespace Ryujinx.Graphics.Shader.Instructions
             Operand lane = ALaneId(context);
             Operand r = context.ShiftRightU32(lane, Const(2));
             Operand t = context.BitwiseAnd(lane, Const(3));
-            Operand src = AGpr(x.Ra);
+            Operand[] lanes = new Operand[2];
             Operand[] h = new Operand[2];
 
             for (int j = 0; j < 2; j++)
             {
                 // out (r, c = 2t + j) = in (c, r): held by lane 4c + r / 2, half r % 2
                 Operand c = context.IAdd(context.ShiftLeft(t, Const(1)), Const(j));
-                Operand v = context.Shuffle(src, context.IAdd(context.ShiftLeft(c, Const(2)), context.ShiftRightU32(r, Const(1))));
-                h[j] = context.BitfieldExtractU32(v, context.ShiftLeft(context.BitwiseAnd(r, Const(1)), Const(4)), Const(16));
+                lanes[j] = context.IAdd(context.ShiftLeft(c, Const(2)), context.ShiftRightU32(r, Const(1)));
+            }
+
+            Operand[] v = AExchange(context, AGpr(x.Ra), lanes);
+
+            for (int j = 0; j < 2; j++)
+            {
+                h[j] = context.BitfieldExtractU32(v[j], context.ShiftLeft(context.BitwiseAnd(r, Const(1)), Const(4)), Const(16));
             }
 
             if (x.Rd < RegisterConsts.RegisterZeroIndex)

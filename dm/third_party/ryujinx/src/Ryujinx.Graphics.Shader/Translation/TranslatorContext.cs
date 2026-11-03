@@ -307,6 +307,8 @@ namespace Ryujinx.Graphics.Shader.Translation
                 funcs[i] = new Function(cfg.Blocks, $"fun{i}", false, inArgumentsCount, outArgumentsCount);
             }
 
+            Optimizer.PrivatizeSharedMemory(funcs, resourceManager, Definitions);
+
             return Generate(
                 funcs,
                 AttributeUsage,

@@ -2,7 +2,7 @@
 """Ampere ALU instructions through the offline translator (dmsh_xlate, arch sm86): half-pair operands whose second source sits in the C slot or is an immediate, HFMA2 .H0_NH1,
 FSEL signs, LDC .IS and BREV. Pokémon Pokopia's blur stepped its loop by HADD2 R7, R7, 2.0 (form 2) and the translator added R0 instead, a loop that never ended and hung the GPU.
 Needs DMSH_TEST_XLATE (the translator) like the other translator tests."""
-import json, os, struct, subprocess, sys, tempfile, unittest
+import json, os, re, struct, subprocess, sys, tempfile, unittest
 from pathlib import Path
 
 TOOLS = Path(__file__).resolve().parents[1] / 'tools'
@@ -137,3 +137,41 @@ class PrmtConstantSelector(Translated):
         for sel in (0x5410, 0x7632, 0x3210):
             with self.subTest(sel=hex(sel)):
                 self.assertNotIn('extract_bits', self.translated([s2r(0, TID_X), s2r(1, TID_Y), self.prmt(sel)]))
+
+
+class HalfwordProvenance(Translated):
+    """A half pair rebuilt from halves of other pairs by PRMT's halfword selectors (Pokemon Pokopia's 8743dd823fc8e863 does so 110 times): an unpack of it reads the half from the pair that
+    holds it. The same bits, rounded to f16 as they were, not the float that pair was packed from; the masks, shifts and ors go"""
+    LANES = {0x5410: (('a', 'x'), ('c', 'x')), 0x7632: (('a', 'y'), ('c', 'y')), 0x1054: (('c', 'x'), ('a', 'x')), 0x3276: (('c', 'y'), ('a', 'y'))}
+
+    def plus_one(self, rs, *insts):   # R4, R5 = the x and y invocation IDs' half pairs doubled (a, c); then the instructions; R12 = Rs + 1.0. → the MSL and the words of a and c
+        msl = self.translated([s2r(0, TID_X), s2r(1, TID_Y), half_op(0x832, 4, 0, 0x40004000), half_op(0x832, 5, 1, 0x40004000), *insts, half_op(0x430, 12, rs, 0x3c003c00)])
+        return msl, dict(zip('ac', re.findall(r'uint (_\d+) = as_type<uint>\(half2\(float2\(', msl)))
+
+    def prmt(self, rd, ra, sel, rc): return bits((0, 12, 0x816), (12, 3, PT), (16, 8, rd), (24, 8, ra), (32, 32, sel), (64, 8, rc))
+
+    def assert_lanes(self, msl, words, lanes):
+        self.assertRegex(msl, ''.join(rf'float _\d+ = float2\(as_type<half2>\({words[w]}\)\)\.{h};\s*' for w, h in lanes))
+        self.assertNotRegex(msl, r'& 65535|<< 16|>> uint\(16\)')
+
+    def test_unpacks_read_the_packed_halves(self):
+        for sel, lanes in self.LANES.items():
+            with self.subTest(sel=hex(sel)):
+                self.assert_lanes(*self.plus_one(6, self.prmt(6, 4, sel, 5)), lanes)
+
+    def test_a_constant_half(self):   # R6 = (R4's low half, the low half of the constant (2.0, 0)): the high lane is 2.0 + 1.0
+        msl, words = self.plus_one(6, bits((0, 12, 0x802), (12, 3, PT), (16, 8, 5), (32, 32, 0x00004000), (72, 4, 0xf)), self.prmt(6, 4, 0x5410, 5))
+        self.assertRegex(msl, rf'float (_\d+) = float2\(as_type<half2>\({words["a"]}\)\)\.x;\s*float (_\d+) = spvFAdd\(\1, 1\.0\);\s*uint _\d+ = as_type<uint>\(half2\(float2\(\2, 3\.0\)\)\);')
+
+    def test_a_zero_half(self):   # R6 = PRMT R4, 0x5410, RZ: the high half is 0, so the high lane is 0.0 + 1.0
+        msl, words = self.plus_one(6, self.prmt(6, 4, 0x5410, 0xff))
+        self.assertRegex(msl, rf'float (_\d+) = float2\(as_type<half2>\({words["a"]}\)\)\.x;\s*float (_\d+) = spvFAdd\(\1, 1\.0\);\s*uint _\d+ = as_type<uint>\(half2\(float2\(\2, 1\.0\)\)\);')
+
+    def test_a_shift_right_then_left(self):   # R6 = (R4 >> 16) | (R5 & 0xffff0000), R7 = (R6 << 16) | (R5 & 0xffff): R7's high half is R4's
+        self.assert_lanes(*self.plus_one(7, self.prmt(6, 4, 0x7632, 5), self.prmt(7, 6, 0x1054, 5)), (('c', 'x'), ('a', 'y')))
+
+    def test_an_arithmetic_shift_is_not_followed(self):   # SHF.R.S32.HI R6, RZ, 16, R4: the high half is R4's sign, not 0
+        msl, words = self.plus_one(6, bits((0, 12, 0x819), (12, 3, PT), (16, 8, 6), (24, 8, 0xff), (32, 32, 16), (64, 8, 4), (73, 2, 2), (76, 1, 1), (80, 1, 1)))
+        shifted = re.search(rf'int (_\d+) = int\({words["a"]}\) >> 16;', msl)
+        self.assertTrue(shifted, msl)
+        self.assertRegex(msl, rf'float _\d+ = float2\(as_type<half2>\(uint\({shifted.group(1)}\)\)\)\.x;\s*float _\d+ = float2\(as_type<half2>\(uint\({shifted.group(1)}\)\)\)\.y;')

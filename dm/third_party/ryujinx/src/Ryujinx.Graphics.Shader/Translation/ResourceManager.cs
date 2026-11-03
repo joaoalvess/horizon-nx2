@@ -4,6 +4,7 @@ using Ryujinx.Graphics.Shader.StructuredIr;
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Linq;
 
 namespace Ryujinx.Graphics.Shader.Translation
 {
@@ -125,6 +126,13 @@ namespace Ryujinx.Graphics.Shader.Translation
             }
         }
 
+        // nxnative: the shader's shared memory, once private memory has taken all its accesses (Optimizer.PrivatizeSharedMemory)
+        public void RemoveCurrentSharedMemory()
+        {
+            Properties.RemoveSharedMemory(SharedMemoryId);
+            SharedMemoryId = -1;
+        }
+
         // nxnative: the scratch of Ampere HMMA (InstEmitAmpereTensor.AHmma, helper dmsh_hmma16816_f16): a shared memory of its own, 256 words for each subgroup of the
         // workgroup, made the first time an HMMA needs it
         public int HmmaScratchMemoryId { get; private set; } = -1;
@@ -137,6 +145,22 @@ namespace Ryujinx.Graphics.Shader.Translation
             }
 
             return HmmaScratchMemoryId;
+        }
+
+        // nxnative: Metal's threadgroup memory a workgroup may have on Apple GPUs (maxThreadgroupMemoryLength, 32 KB on the M4 and the A-series)
+        public const int HostSharedMemorySize = 32768;
+
+        public int SharedMemorySize => Properties.SharedMemories.Values.Sum(m => m.ArrayLength * m.Type.GetSizeInBytes());
+
+        // The HMMA scratch for the lanes' exchanges of LDSM and MOVM, or -1 when making it would take the workgroup past the host's threadgroup memory
+        public int TryGetHmmaScratchMemoryId(int subgroups)
+        {
+            if (HmmaScratchMemoryId < 0 && SharedMemorySize + 256 * sizeof(uint) * subgroups > HostSharedMemorySize)
+            {
+                return -1;
+            }
+
+            return GetHmmaScratchMemoryId(subgroups);
         }
 
         public void SetVertexAsComputeLocalMemories(ShaderStage stage, InputTopology inputTopology)

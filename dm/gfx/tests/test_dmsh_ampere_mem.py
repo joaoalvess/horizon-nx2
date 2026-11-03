@@ -19,7 +19,7 @@ class Translated(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix='ampere_mem_') as d:
             work = Path(d); (work / 'k.bin').write_bytes(code)
             # c0 layout (QueryAmpereComputeC0Layout): no uniform or storage buffers, 3 texture handles from 0x10, image handles from 0x28 (word 12 = image slot 1), 0x40 bytes
-            job = [dict(key='k', stage='cs', arch='sm86', code=str(work / 'k.bin'), tex={}, img={}, attr={}, fout={}, local=[32, 1, 1], debug=True, nvn2_cs=[0, 0, 3, 0x40, 0], **extra)]
+            job = [dict(dict(key='k', stage='cs', arch='sm86', code=str(work / 'k.bin'), tex={}, img={}, attr={}, fout={}, local=[32, 1, 1], debug=True, nvn2_cs=[0, 0, 3, 0x40, 0]), **extra)]
             (work / 'jobs.json').write_text(json.dumps(job))
             r = subprocess.run([os.environ['DMSH_TEST_XLATE'], str(work / 'jobs.json'), d], capture_output=True, text=True)
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
@@ -67,8 +67,23 @@ def mov(rd, value):   # MOV Rd, imm32: values the tests can see in the output
     return inst(0x000fc60000000f00, value << 32 | rd << 16 | 0x7802)
 
 
-def sts(offset, rb):   # STS.U32 [RZ + offset], Rb: keeps its result
-    return inst(0x000fe80000000800, offset << 40 | rb << 32 | 0xff << 24 | 0x7388)
+def sts(offset, rb, ra=0xff):   # STS.U32 [Ra + offset], Rb (RZ by default): keeps its result
+    return inst(0x000fe80000000800, offset << 40 | rb << 32 | ra << 24 | 0x7388)
+
+
+def lds(rd, ra, offset):   # LDS.U32 Rd, [Ra + offset]
+    return inst(0x000fe20000000800, offset << 40 | ra << 24 | rd << 16 | 0x7984)
+
+
+TID_X, TID_Y, TID_Z = 0x21, 0x22, 0x23
+
+
+def s2r(rd, sr):   # S2R Rd, SR
+    return inst(0x000fe20000000000 | sr << 8, rd << 16 | 0x7919)
+
+
+def imad(rd, ra, imm, rc):   # IMAD Rd, Ra, imm32, Rc
+    return inst(0x000fe200078e0000 | rc, imm << 32 | ra << 24 | rd << 16 | 0x7824)
 
 
 class Shared(Translated):
@@ -195,7 +210,7 @@ class Pokopia(Translated):
 
     def hfma2_lanes(self, hfma2):   # the generated code, and the names of A.lo, A.hi, B.lo, B.hi, unpacked in that order
         msl = self.msl(self.MERGE_FIRST, self.MERGE_SECOND, hfma2)
-        lanes = re.findall(r'float (_\d+) = float2\(as_type<half2>\(uint\(_\d+\)\)\)\.[xy];', msl)
+        lanes = re.findall(r'float (_\d+) = float2\(as_type<half2>\((?:uint\(_\d+\)|_\d+)\)\)\.[xy];', msl)   # A.lo reads the low word as it is, the half the merge packed it to
         self.assertEqual(len(lanes), 4, msl)
         return (msl, *lanes)
 
@@ -241,6 +256,101 @@ class Pokopia(Translated):
 
     def test_membar_orders_memory(self):
         self.assertRegex(self.msl(self.MEMBAR, self.ERRBAR), r'threadgroup_barrier|atomic_thread_fence')
+
+
+class WarpExchange(Translated):
+    """LDSM and MOVM take words from other lanes of the warp. In a compute shader they pass them through the SIMD-group's 256 words of the HMMA scratch between two SIMD-group barriers, which on
+    an M4 took half the time of MOVM's shuffles and a fifth of LDSM.x4.MT88's (Donkey Kong Bananza's NDSR upscaler); a workgroup with no room left for the scratch shuffles"""
+    MOVM = (0x000fe20000000000, 0x000000000c0c723a)           # MOVM.16.MT88 R12, R12
+    LDSM_X4_MT88 = (0x000fe20000004200, 0x00004000000c783b)   # LDSM.16.MT88.4 R12, [R0 + 0x40] (the upscaler's 7629d857a0a93833 +0x1ce0 into R20)
+
+    def msl(self, *code, **extra):
+        msl = self.translate(b''.join(code) + inst(*SUATOM) + inst(*EXIT), **extra)
+        return msl[msl.index('kernel void'):]
+
+    def assert_through_the_scratch(self, msl, words):
+        self.assertIn(f'threadgroup spvUnsafeArray<uint, {words}>', msl)
+        self.assertEqual(msl.count('simdgroup_barrier(mem_flags::mem_threadgroup)'), 2, msl)
+        self.assertNotIn('spvSubgroupShuffle(', msl)
+
+    def test_movm(self):
+        self.assert_through_the_scratch(self.msl(s2r(12, TID_X), inst(*self.MOVM)), 256)
+
+    def test_ldsm(self):
+        self.assert_through_the_scratch(self.msl(s2r(0, TID_X), sts(0, 0), inst(*self.LDSM_X4_MT88), shared=0x400), 256)
+
+    @staticmethod
+    def ldsm(count, mode):   # LDSM.16.M88 / .MT88 (mode 0 / 1) .1 / .2 / .4 (count 0 / 1 / 2) R12, [R0 + 0x40]
+        return 0x000fe20000000000 | mode << 14 | count << 8, 0x00004000000c783b
+
+    def test_ldsm_address_is_the_register_as_it_is(self):   # 78..80 are LDSM's mode, not the stride of LDS and STS: read as one, .MT88 took R0 * 4 + 0x40
+        for count, mode in [(count, mode) for count in range(3) for mode in range(2)]:
+            with self.subTest(matrices=1 << count, transposed=mode):
+                self.assertRegex(self.msl(s2r(0, TID_X), sts(0, 0), inst(*self.ldsm(count, mode)), shared=0x400),
+                                 r'float (_\d+) = as_type<float>\(gl_LocalInvocationID\.x\);[\s\S]*int _\d+ = as_type<int>\(\1\) \+ 64;')
+
+    def test_scratch_index_is_the_simd_groups_block_and_the_lane(self):   # 64 x 2 invocations: (x + 64y + 128z) >> 5 << 8, plus the lane; the loads from the same block
+        msl = self.msl(s2r(12, TID_X), inst(*self.MOVM), local=[64, 2, 1])
+        store = re.search(r'float (_\d+) = as_type<float>\(gl_LocalInvocationID\.x\);\s*float (_\d+) = as_type<float>\(gl_LocalInvocationID\.y\);\s*'
+                          r'float (_\d+) = as_type<float>\(gl_LocalInvocationID\.z\);\s*int (_\d+) = as_type<int>\(\2\) \* 64;\s*int (_\d+) = as_type<int>\(\3\) \* 128;\s*'
+                          r'int (_\d+) = \4 \+ \5;\s*int (_\d+) = as_type<int>\(\1\) \+ \6;\s*uint (_\d+) = uint\(int\(uint\(\7\) >> uint\(5\)\)\);\s*'
+                          r'int (?P<block>_\d+) = int\(\8\) << 8;\s*float (_\d+) = as_type<float>\(gl_SubgroupInvocationID\);\s*int (_\d+) = (?P=block) \+ as_type<int>\(\10\);\s*'
+                          r'(?P<scratch>_\d+)\[\11\] = ', msl)
+        self.assertTrue(store, msl)
+        loads = re.findall(rf'int (_\d+) = {store["block"]} \+ _\d+;\s*float _\d+ = as_type<float>\({store["scratch"]}\[\1\]\);', msl)
+        self.assertEqual(len(loads), 2, msl)
+
+    def test_a_block_for_each_simd_group(self):   # 128 invocations: 4 SIMD-groups
+        self.assert_through_the_scratch(self.msl(s2r(12, TID_X), inst(*self.MOVM), local=[64, 2, 1]), 1024)
+
+    def test_no_room_shuffles(self):   # 31.5 KB of the shader's own shared memory leave no room for the scratch's 1 KB
+        msl = self.msl(s2r(12, TID_X), sts(0, 12), inst(*self.MOVM), shared=0x8000 - 0x200)
+        self.assertEqual(msl.count('spvSubgroupShuffle('), 2, msl)
+        self.assertNotIn('simdgroup_barrier', msl)
+
+
+class SharedPerInvocation(Translated):
+    """Shared memory past Metal's 32 KB that each invocation addresses as words of its own (local invocation index * stride + a constant below it), with no barrier or atomic: 64 of Pokemon
+    Pokopia's froxel compute shaders, 8 x 8 x 4 invocations of 37 or 47 words, whose pipelines failed. The words become an array of the invocation's own"""
+    BAR = (0x000fec0000000000, 0x0000000000007b1d)        # BAR.SYNC 0x0
+    ATOMS_ADD = (0x004e680000000000, 0x0000080c020c738c)  # ATOMS.ADD R12, [R2 + 8], R12
+
+    def msl(self, *code, local=(8, 8, 4), shared=8 * 8 * 4 * 148):
+        index = s2r(0, TID_X) + s2r(1, TID_Y) + s2r(4, TID_Z) + imad(2, 0, 148, 0xff) + imad(2, 1, 8 * 148, 2) + imad(2, 4, 64 * 148, 2)   # R2 = (x + 8y + 64z) * 148
+        msl = self.translate(index + b''.join(code) + inst(*SUATOM) + inst(*EXIT), local=list(local), shared=shared)
+        return msl[msl.index('kernel void'):]
+
+    def shared_read_or_written(self, msl):
+        name = re.search(r'threadgroup spvUnsafeArray<uint, \d+> (_\d+);', msl)
+        return bool(name and re.search(rf'\b{name.group(1)}\[', msl))
+
+    def test_private(self):
+        msl = self.msl(mov(3, 77), sts(8, 3, 2), lds(12, 2, 8))
+        self.assertNotIn('threadgroup spvUnsafeArray', msl)
+        self.assertRegex(msl, r'spvUnsafeArray<uint, 37> (_\d+);[\s\S]*\1\[2\] = 77u;')
+
+    def test_barrier_keeps_it_shared(self):
+        self.assertTrue(self.shared_read_or_written(self.msl(mov(3, 77), sts(8, 3, 2), inst(*self.BAR), lds(12, 2, 8))))
+
+    def test_atomic_keeps_it_shared(self):
+        self.assertTrue(self.shared_read_or_written(self.msl(mov(3, 77), sts(8, 3, 2), mov(12, 1), inst(*self.ATOMS_ADD))))
+
+    def test_past_the_stride_keeps_it_shared(self):   # word 37 of an invocation is word 0 of the next
+        self.assertTrue(self.shared_read_or_written(self.msl(mov(3, 77), sts(148, 3, 2), lds(12, 2, 8))))
+
+    def test_a_load_outside_the_invocations_words_keeps_it_shared(self):   # word -1, the previous invocation's last, and word 37, the next one's first
+        for offset in (-4, 148):
+            with self.subTest(offset=offset):
+                self.assertTrue(self.shared_read_or_written(self.msl(mov(3, 77), sts(8, 3, 2), lds(12, 2, offset & 0xffffff))))
+
+    def test_an_8_or_16_bit_access_keeps_it_shared(self):   # STS.U8 / STS.U16 [R2 + 12], R3 beside the 32-bit words
+        for size in (0, 2):
+            with self.subTest(bits=8 << (size // 2)):
+                small = inst(0x000fe80000000000 | size << 8, 12 << 40 | 3 << 32 | 2 << 24 | 0x7388)
+                self.assertTrue(self.shared_read_or_written(self.msl(mov(3, 77), sts(8, 3, 2), small, lds(12, 2, 8))))
+
+    def test_within_the_limit_unchanged(self):   # 8 x 8 x 2 invocations, 18,944 bytes
+        self.assertTrue(self.shared_read_or_written(self.msl(mov(3, 77), sts(8, 3, 2), lds(12, 2, 8), local=(8, 8, 2), shared=8 * 8 * 2 * 148)))
 
 
 if __name__ == '__main__':

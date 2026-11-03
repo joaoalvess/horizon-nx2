@@ -11,6 +11,7 @@ namespace Ryujinx.Graphics.Shader.StructuredIr
         private readonly Dictionary<SetBindingPair, TextureDefinition> _images;
         private readonly Dictionary<int, MemoryDefinition> _localMemories;
         private readonly Dictionary<int, MemoryDefinition> _sharedMemories;
+        private int _nextSharedMemoryId;
 
         public IReadOnlyDictionary<int, BufferDefinition> ConstantBuffers => _constantBuffers;
         public IReadOnlyDictionary<int, BufferDefinition> StorageBuffers => _storageBuffers;
@@ -62,10 +63,16 @@ namespace Ryujinx.Graphics.Shader.StructuredIr
 
         public int AddSharedMemory(MemoryDefinition definition)
         {
-            int id = _sharedMemories.Count;
+            int id = _nextSharedMemoryId++;
             _sharedMemories.Add(id, definition);
 
             return id;
+        }
+
+        // nxnative: a shared memory no instruction reads or writes any more (Optimizer.PrivatizeSharedMemory), left out of the program's declarations
+        public void RemoveSharedMemory(int id)
+        {
+            _sharedMemories.Remove(id);
         }
 
         public static TextureFormat GetTextureFormat(IGpuAccessor gpuAccessor, int handle, int cbufSlot = -1)
