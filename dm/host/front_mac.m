@@ -1176,9 +1176,21 @@ static NSArray<NSURL *> *found_cheat_files(NSString *build) {
 }
 @end
 
+int dm_thermal_now(void) { return (int)NSProcessInfo.processInfo.thermalState; }
+int dm_low_power_now(void) { return NSProcessInfo.processInfo.lowPowerModeEnabled; }
+static void power_watch(void) {
+    uint64_t t0 = now_ns();
+    [NSNotificationCenter.defaultCenter addObserverForName:NSProcessInfoThermalStateDidChangeNotification object:nil queue:nil usingBlock:^(NSNotification *n) {
+        (void)n; LOG("front end: thermal state → %d (%.0f s after launch)", dm_thermal_now(), (now_ns() - t0) / 1e9); }];
+    [NSNotificationCenter.defaultCenter addObserverForName:NSProcessInfoPowerStateDidChangeNotification object:nil queue:nil usingBlock:^(NSNotification *n) {
+        (void)n; LOG("front end: Low Power Mode → %s (%.0f s after launch)", dm_low_power_now() ? "on" : "off", (now_ns() - t0) / 1e9); }];
+    LOG("front end: thermal state %d, Low Power Mode %s", dm_thermal_now(), dm_low_power_now() ? "on" : "off");
+}
+
 void front_run(void (*guest)(void)) {
     // A game: tell macOS its work is latency-critical, so the system does not trade its frame time for power while the frame rate is capped
     static id activity; activity = [[NSProcessInfo processInfo] beginActivityWithOptions:NSActivityUserInitiated | NSActivityLatencyCritical reason:@"game"];
+    power_watch();
     if (!getenv("DM_WINDOW")) { guest(); return; }
     @autoreleasepool {
         [NSApplication sharedApplication];
