@@ -2305,6 +2305,15 @@ static void up_blit_add(id<MTLBuffer> src, size_t off, size_t row, size_t image,
     up_blit_at(src, off, row, image, size, dst, slice, level, MTLOriginMake(0, 0, 0));
 }
 
+static int up_src(uint64_t addr, uint64_t len, void **buf, uint64_t *off) {
+    up_begin();
+    pthread_mutex_lock(&g_mu); int i = pool_find(addr, len), res = i >= 0 && g_pools[i].res; pthread_mutex_unlock(&g_mu);
+    if (i < 0) return 0;
+    uintptr_t pg = (uintptr_t)getpagesize(), a = (uintptr_t)addr & ~(pg - 1), b = ((uintptr_t)(addr + len) + pg - 1) & ~(pg - 1);
+    id<MTLBuffer> v = res || b == a ? nil : [g_dev newBufferWithBytesNoCopy:(void *)a length:b - a options:MTLResourceStorageModeShared deallocator:nil];
+    if (!v) return mtl_addr(addr, len, buf, off);
+    res_add(v); [g_up_keep addObject:v]; *buf = (__bridge void *)v; *off = addr - a; return 1;
+}
 static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp, id<MTLTexture> reuse, MTLTextureUsage keep);
 static int g_direct_upload_on = -1; static uint64_t g_direct_uploads, g_direct_dispatches;
 static int direct_upload_on(void) { if (g_direct_upload_on < 0) { const char *e=getenv("DM_NVN_DIRECT_UPLOAD"); g_direct_upload_on=!e||atoi(e); } return g_direct_upload_on; }
@@ -2393,7 +2402,8 @@ static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp, id<MTLTexture
     }
     g_bp_up_bytes += total;
     void *mb; uint64_t mo;
-    int use_gpu = !rb_shift && !sparse && g_nvn_deswz_gpu && mtl_addr((uint64_t)t->mem, t->L.size, &mb, &mo);   // a sparse pool's texture is gathered through its page table on the CPU
+    int use_gpu = !rb_shift && !sparse && g_nvn_deswz_gpu && up_src((uint64_t)t->mem, t->L.size, &mb, &mo);   // a sparse pool's texture is gathered through its page table on the CPU
+    unsigned seq = g_up_seq;
     if (g_nvn_deswz_gpu && !use_gpu && !sparse && !rb_shift) RED_ONCE(40, "swizzled texture storage is not in a memory pool; falling back to the CPU");
     if (use_gpu) {
         // The GPU reads the memory pool at execution time, which is closer to a real Switch than a snapshot at CPU upload time; the dirty-page stamp is still taken before encoding, and later writes still trigger a re-upload.
@@ -2416,6 +2426,7 @@ static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp, id<MTLTexture
         }
         size_t stg_off;
         id<MTLBuffer> stg = up_alloc(total ? total : 16, &stg_off);
+        if (g_up_seq != seq) up_src((uint64_t)t->mem, t->L.size, &mb, &mo);
         size_t off = 0; int enc_ok = g_up_ce != nil, nb0 = g_nup_blits;
         for (unsigned l = 0; enc_ok && l < d.mipmapLevelCount; l++) {
             uint32_t w = MAX(t->d.width >> l, 1u), h = MAX(t->d.height >> l, 1u), z = t->d.target == 2 ? MAX(t->d.depth >> l, 1u) : 1;
@@ -2812,7 +2823,8 @@ static void sp_upload(NvPkg *pk, struct sp_tex *p, uint32_t i, const uint8_t *ph
     if (!sp_hold(p)) return;
     nvn_sparse_protect(p->pool, a, n);
     pthread_mutex_unlock(&g_sp_mu);
-    int gpu = k < p->ntiled && phys && !p->rb_shift && g_nvn_deswz_gpu && mtl_addr((uint64_t)(uintptr_t)phys, SP_TILE, &mb, &mo);
+    int gpu = k < p->ntiled && phys && !p->rb_shift && g_nvn_deswz_gpu && up_src((uint64_t)(uintptr_t)phys, SP_TILE, &mb, &mo);
+    unsigned seq = g_up_seq;
     if (!gpu) { if (!sp_hold(p)) return; nvn_sparse_copy(p->pool, raw, a, n); pthread_mutex_unlock(&g_sp_mu); }
     up_begin(); g_sp_up_bytes += n;
     if (k < p->ntiled) {
@@ -2822,6 +2834,7 @@ static void sp_upload(NvPkg *pk, struct sp_tex *p, uint32_t i, const uint8_t *ph
         size_t pitch = (size_t)p->tw / p->bw * p->bpb, rows = p->th / p->bh, off;
         if (gpu) {
             id<MTLBuffer> stg = up_alloc(SP_TILE, &off); size_t poff; id<MTLBuffer> prm = up_param_alloc(&poff);
+            if (g_up_seq != seq) up_src((uint64_t)(uintptr_t)phys, SP_TILE, &mb, &mo);
             if (!nvn_deswz_gpu_encode_m4(g_up_ce, g_up_ct, prm, poff, (__bridge id<MTLBuffer>)mb, mo, &p->td, 0, 0, stg, off, pitch)) {
                 [g_up_texs addObject:pk->tex]; up_blit_at(stg, off, pitch, pitch * rows, sz, pk->tex, s, l, org); return; }
             if (!sp_hold(p)) return;
