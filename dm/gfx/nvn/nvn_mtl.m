@@ -100,6 +100,7 @@ static id<MTL4CommandBuffer> g_present_cb[3];
 static id<MTL4ArgumentTable> g_vt, g_ft, g_ct, g_up_ct;
 static int g_vbuf_cache = 1;   // DM_NVN_VBUF_CACHE=0 restores the uncached path for A/B measurements
 static uint64_t g_vt_addr[31]; static uint32_t g_vt_valid;
+static uint64_t g_ft_addr[31], g_ct_addr[31]; static uint32_t g_ft_valid, g_ct_valid;
 static uint64_t g_vbuf_resolve, g_vbuf_reuse, g_vbuf_set, g_vbuf_skip, g_vbuf_copies, g_vbuf_copy_bytes;   // copies: vertex streams at addresses not 4-byte aligned (vbuf_unaligned)
 static id<MTL4ArgumentTable> g_present_args;
 static id<MTLBuffer> g_present_uv[3];
@@ -454,6 +455,7 @@ void mtl_init(void) {
     NSError *ate = nil;
     g_vt = rec_table([g_dev newArgumentTableWithDescriptor:atd error:&ate]); if (!g_vt) MDIE("failed to create the vertex argument table: %s", ate.localizedDescription.UTF8String);
     g_vt_valid = 0;
+    g_ft_valid = g_ct_valid = 0;
     g_ft = rec_table([g_dev newArgumentTableWithDescriptor:atd error:&ate]); if (!g_ft) MDIE("failed to create the fragment argument table: %s", ate.localizedDescription.UTF8String);
     g_ct = rec_table([g_dev newArgumentTableWithDescriptor:atd error:&ate]); if (!g_ct) MDIE("failed to create the compute argument table: %s", ate.localizedDescription.UTF8String);
     g_up_ct = [g_dev newArgumentTableWithDescriptor:atd error:&ate]; if (!g_up_ct) MDIE("failed to create the upload compute argument table: %s", ate.localizedDescription.UTF8String);
@@ -986,7 +988,11 @@ static inline void enc_r_vbuf(id<MTL4RenderCommandEncoder> e, NSUInteger i, uint
     g_vt_addr[i] = gpu; g_vt_valid |= bit; g_vbuf_set++;
 }
 static inline void enc_r_args(id<MTL4RenderCommandEncoder> e, MTLRenderStages s, uint64_t gpu, NSUInteger i) {
-    if (s == MTLRenderStageVertex) enc_r_vbuf(e, i, gpu); else if (rec_on()) rec_table_op(RO_T_ADDR, g_ft, gpu, i); else [g_ft setAddress:gpu atIndex:i];
+    if (s == MTLRenderStageVertex) { enc_r_vbuf(e, i, gpu); return; }
+    uint32_t bit = 1u << i;
+    if (g_vbuf_cache && (g_ft_valid & bit) && g_ft_addr[i] == gpu) return;
+    if (rec_on()) rec_table_op(RO_T_ADDR, g_ft, gpu, i); else [g_ft setAddress:gpu atIndex:i];
+    g_ft_addr[i] = gpu; g_ft_valid |= bit;
 }
 static inline void enc_r_draw(id<MTL4RenderCommandEncoder> e, MTLPrimitiveType p, NSUInteger v, NSUInteger n) { [e drawPrimitives:p vertexStart:v vertexCount:n]; }
 static inline void enc_r_draw_instanced(id<MTL4RenderCommandEncoder> e, MTLPrimitiveType p, NSUInteger v, NSUInteger n, NSUInteger i, NSUInteger b) { [e drawPrimitives:p vertexStart:v vertexCount:n instanceCount:i baseInstance:b]; }
@@ -998,7 +1004,12 @@ static inline id<MTL4ComputeCommandEncoder> enc_c_begin(MTLComputePassDescriptor
 static inline id<MTLComputeCommandEncoder> enc_c_begin_concurrent(id<MTLCommandBuffer> cb) { return [cb computeCommandEncoderWithDispatchType:MTLDispatchTypeConcurrent]; }
 static inline void enc_c_end(id e) { m4_end(e); }
 static inline void enc_c_pso(id e, id<MTLComputePipelineState> p) { [e setComputePipelineState:p]; }
-static inline void enc_c_args(id e, uint64_t gpu, NSUInteger i) { (void)e; if (rec_on()) rec_table_op(RO_T_ADDR, g_ct, gpu, i); else [g_ct setAddress:gpu atIndex:i]; }
+static inline void enc_c_args(id e, uint64_t gpu, NSUInteger i) {
+    (void)e; uint32_t bit = 1u << i;
+    if (g_vbuf_cache && (g_ct_valid & bit) && g_ct_addr[i] == gpu) return;
+    if (rec_on()) rec_table_op(RO_T_ADDR, g_ct, gpu, i); else [g_ct setAddress:gpu atIndex:i];
+    g_ct_addr[i] = gpu; g_ct_valid |= bit;
+}
 static inline void enc_c_dispatch(id e, MTLSize n, MTLSize t) { [e dispatchThreadgroups:n threadsPerThreadgroup:t]; }
 static inline void enc_c_dispatch_indirect(id e, uint64_t ind, MTLSize t) { [(id<MTL4ComputeCommandEncoder>)e dispatchThreadgroupsWithIndirectBuffer:ind threadsPerThreadgroup:t]; }
 static inline id enc_b_begin(id cb) { return [cb respondsToSelector:@selector(beginCommandBufferWithAllocator:)] ? [cb computeCommandEncoder] : [cb blitCommandEncoder]; }
@@ -10364,7 +10375,7 @@ static int rb_swap_gpu(uint64_t src, size_t row, size_t img, uint64_t dst, size_
     struct { uint64_t s, d; uint32_t w, h, row, img, drow, dimg, shift; } *p = (void *)((uint8_t *)pb.contents + po);
     *p = (typeof(*p)){src, dst, (uint32_t)(wb / 2), (uint32_t)rows, (uint32_t)row, (uint32_t)img, (uint32_t)drow, (uint32_t)dimg, (uint32_t)shift};
     id<MTL4ComputeCommandEncoder> e = dispatch_enc();
-    [g_ct setAddress:pb.gpuAddress + po atIndex:0]; enc_c_pso(e, ps);
+    enc_c_args(e, pb.gpuAddress + po, 0); enc_c_pso(e, ps);
     enc_c_dispatch(e, MTLSizeMake((wb / 2 + 63) / 64, rows, nz), MTLSizeMake(64, 1, 1));
     static int once; if (!once++) MLOG("RGB565-family copy between guest memory and a host texture: red and blue exchanged on the GPU (first case %zux%zux%zu texels)", wb / 2, rows, nz);
     return 1;
