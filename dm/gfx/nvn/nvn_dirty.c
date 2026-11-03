@@ -208,6 +208,12 @@ int nvn_dirty_since_span(const void *span, const void *addr, size_t len, uint64_
     return 0;
 }
 int nvn_dirty_since(const void *addr, size_t len, uint64_t stamp) { return nvn_dirty_since_span(NULL, addr, len, stamp); }
+int nvn_dirty_since_hint(const void **span, const void *addr, size_t len, uint64_t stamp) {
+    if (!len) return 0;
+    range_t *r = (range_t *)*span; uintptr_t a0 = (uintptr_t)addr;
+    if (!r || !atomic_load_explicit(&r->live, memory_order_acquire) || a0 < r->base + g_pg || a0 + len > r->end - g_pg) *span = r = find_span(a0, len);
+    return r ? nvn_dirty_since_span(r, addr, len, stamp) : 1;
+}
 void nvn_dirty_slot_stats(int *live, int *used_slots, uint64_t *adds_total) {
     int n = atomic_load(&g_nr), active = 0;
     for (int i = 0; i < n; i++) active += live_at(i) != 0;

@@ -2724,7 +2724,7 @@ void nvn_sparse_units(const void *pool, int n, const uint64_t *a, const uint64_t
     pthread_mutex_unlock(&g_vp_mu);
 }
 void nvn_sparse_written(const void *pool, int n, const uint64_t *a, const uint64_t *len, uint64_t stamp, uint8_t *out) {
-    pthread_mutex_lock(&g_vp_mu); struct vpool *v = pool ? ((const pool_t *)pool)->vp : NULL;
+    pthread_mutex_lock(&g_vp_mu); struct vpool *v = pool ? ((const pool_t *)pool)->vp : NULL; const void *span = NULL;
     for (int i = 0; i < n; i++) {
         const uint8_t *rs = NULL, *re = NULL; int w = 0;
         for (uint64_t o = 0; v && !w && o < len[i]; o += 0x1000) {
@@ -2732,10 +2732,10 @@ void nvn_sparse_written(const void *pool, int n, const uint64_t *a, const uint64
             const vpte *e = a[i] + o >= (uint64_t)(uintptr_t)v->base && at < v->size ? vpt_get(v, at) : NULL;
             if (!e || !e->phys) continue;
             if (rs && e->phys == re) { re += 0x1000; continue; }
-            if (rs) w = nvn_dirty_since(rs, (size_t)(re - rs), stamp);
+            if (rs) w = nvn_dirty_since_hint(&span, rs, (size_t)(re - rs), stamp);
             rs = e->phys; re = rs + 0x1000;
         }
-        if (!w && rs) w = nvn_dirty_since(rs, (size_t)(re - rs), stamp);
+        if (!w && rs) w = nvn_dirty_since_hint(&span, rs, (size_t)(re - rs), stamp);
         out[i] = (uint8_t)w;
     }
     pthread_mutex_unlock(&g_vp_mu);
