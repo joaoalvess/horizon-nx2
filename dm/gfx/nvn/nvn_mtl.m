@@ -2620,8 +2620,10 @@ static void cpu_tex_drop_pool(const void *pool) {
     pthread_mutex_unlock(&g_cpu_tex_mu);
 }
 // The GPU owns the texture's content: its host texture was made to be rendered into or written by shaders (nvn_ft_poll in hle_nvn.c never re-uploads such a texture from guest memory)
+static int sp_gpu(const struct sp_tex *p);
 int mtl_tex_gpu_owned(uint64_t serial) {
     __unsafe_unretained id o = tex_get(serial);
+    if ([o isKindOfClass:[NvPkg class]] && sp_gpu(((NvPkg *)o)->sp)) return 1;
     if (!o || ![o conformsToProtocol:@protocol(MTLTexture)]) return 0;
     return (((id<MTLTexture>)o).usage & (MTLTextureUsageRenderTarget | MTLTextureUsageShaderWrite)) != 0;
 }
@@ -2701,10 +2703,11 @@ struct sp_tex {
     const void *pool; nvn_texdesc d, td;
     uint32_t tw, th, bw, bh, bpb, layers, levels, split, ntiled, per, nsm;
     uint32_t tx[16], ubase[17], mfirst, mtx[16], mty[16], tail;
-    int rb_shift, gone; uint64_t vgen, stamp, seen, sub; uint32_t mapped, npend;
+    int rb_shift, gone, gpu; uint64_t vgen, stamp, seen, sub; uint32_t mapped, npend;
     sp_unit *u; uint32_t *ml;
 };
 static pthread_mutex_t g_sp_mu = PTHREAD_RECURSIVE_MUTEX_INITIALIZER;
+static int sp_gpu(const struct sp_tex *p) { return p && p->gpu; }
 static struct sp_tex **g_sp; static int g_sp_n, g_sp_cap; static uint64_t g_sp_ids;
 static NSMutableArray *g_sp_heaps;
 typedef struct { uint64_t bits[SP_CHUNK / 64]; uint32_t used; uint64_t idle; } sp_chunk; static sp_chunk *g_sp_ch;
@@ -2864,7 +2867,7 @@ static int sp_level_mapped(const struct sp_tex *p, unsigned l) {
 }
 static void sp_view(NvPkg *pk, int force) {
     struct sp_tex *p = pk->sp; unsigned n = p->levels, r = n;
-    if (p->d.target != NVN_TEXTURE_TARGET_2D || n < 2) return;
+    if (p->gpu || p->d.target != NVN_TEXTURE_TARGET_2D || n < 2) return;
     while (r > 0 && sp_level_mapped(p, r - 1)) r--;
     if (r == n) r = n - 1;
     if (!force && (int)r == pk->vbase) return;
@@ -2909,7 +2912,7 @@ static void sp_reconcile(NvPkg *pk, int all, int written) {
             if (nr < SP_RANGES) break; }
     }
     if (all || redo) { now = nvn_sparse_gen(); for (uint32_t i = 0; i < n; i++) sp_mark(p, i, redo && p->u[i].tile != SP_NONE ? SP_UP : 0); }
-    if (written && st != p->seen && p->mapped)
+    if (written && !p->gpu && st != p->seen && p->mapped)
         for (uint32_t m = 0, k = 0; m <= p->mapped; m++) {
             if (m < p->mapped && !(p->u[p->ml[m]].flags & SP_PEND)) { g_sp_ix[k] = p->ml[m]; sp_unit_range(p, p->ml[m], &g_sp_a[k], &g_sp_len[k]); k++; }
             if (k == SP_BATCH || (m == p->mapped && k)) { nvn_sparse_written(p->pool, (int)k, g_sp_a, g_sp_len, p->stamp, g_sp_w); for (uint32_t j = 0; j < k; j++) if (g_sp_w[j]) sp_mark(p, g_sp_ix[j], SP_UP); k = 0; }
@@ -2919,7 +2922,7 @@ static void sp_reconcile(NvPkg *pk, int all, int written) {
         for (uint32_t j = 0; j < k; j++) sp_unit_range(p, g_sp_idx[b + j], &g_sp_a[j], &g_sp_len[j]);
         nvn_sparse_units(p->pool, (int)k, g_sp_a, g_sp_len, g_sp_m, g_sp_key, g_sp_phys);
         for (uint32_t j = 0; j < k; j++) {
-            uint32_t i = g_sp_idx[b + j], nt = sp_unit_tiles(p, i); sp_unit *u = &p->u[i]; int up = !!(u->flags & SP_UP);
+            uint32_t i = g_sp_idx[b + j], nt = sp_unit_tiles(p, i); sp_unit *u = &p->u[i]; int up = !!(u->flags & SP_UP), fresh = 0;
             u->flags &= ~(uint32_t)(SP_MARK | SP_UP);
             if (!g_sp_m[j]) {
                 u->key = 0;
@@ -2929,11 +2932,11 @@ static void sp_reconcile(NvPkg *pk, int all, int written) {
             if (u->flags & SP_PEND) { u->flags &= ~(uint32_t)SP_PEND; p->npend--; g_sp_npend--; up = vchg = 1; }
             if (u->tile == SP_NONE) {
                 if ((u->tile = sp_tile_alloc(nt)) == SP_NONE) continue;
-                sp_ops_unit(p, i, u->tile, 0); sp_ml_add(p, i); g_sp_ntiles += nt; g_sp_maps++; up = vchg = 1;
+                sp_ops_unit(p, i, u->tile, 0); sp_ml_add(p, i); g_sp_ntiles += nt; g_sp_maps++; up = vchg = fresh = 1;
             }
             if (g_sp_key[j] != u->key) up = 1;
             u->key = g_sp_key[j];
-            if (!up) continue;
+            if (!up || (p->gpu && !fresh)) continue;
             if (g_sp_nupl == g_sp_uplcap) { g_sp_uplcap = g_sp_uplcap ? 2 * g_sp_uplcap : 1024; if (!(g_sp_upl = realloc(g_sp_upl, (size_t)g_sp_uplcap * sizeof *g_sp_upl))) MDIE("sparse texture upload list allocation failed"); }
             g_sp_upl[g_sp_nupl++] = (sp_upl){i, g_sp_phys[j]};
         }
@@ -3050,9 +3053,9 @@ static id<MTLTexture> sp_upgrade(NvPkg *pk, const tex_t *t, MTLTextureUsage add)
          (unsigned long long)t->serial, p->mapped, (unsigned long long)++g_pfv_upgrades);
     return nt;
 }
-static NvPkg *sp_new(const tex_t *t, int *retry) {
+static NvPkg *sp_new(const tex_t *t, int *retry, int gpu) {
     if (!(t->d.flags & NVN_TEXTURE_FLAGS_SPARSE) || !t->pool || !(t->pool->flags & NVN_MEMORY_POOL_FLAGS_VIRTUAL) || t->pool->vmode == 1 || !nvn_sparse_pool(t->pool) || !sp_on()) return nil;
-    const char *why = NULL; MTLTextureDescriptor *d = tex_desc(t, 1); id<MTLTexture> tex = nil;
+    const char *why = NULL; MTLTextureDescriptor *d = tex_desc(t, !gpu); id<MTLTexture> tex = nil;
     int bw, bh, bpb = nvn_fmt_bpb(t->d.format, &bw, &bh); uint32_t tw, th, tdp; int ntl = nvn_tex_sparse_tiles(&t->d, &tw, &th, &tdp);
     struct sp_tex q = {0};
     if (!d) why = "no Metal texture for it";
@@ -3094,7 +3097,7 @@ static NvPkg *sp_new(const tex_t *t, int *retry) {
         return nil;
     }
     struct sp_tex *p = malloc(sizeof *p); if (!p) MDIE("sparse texture allocation failed");
-    *p = q; p->serial = t->serial; p->pool = t->pool; p->mem = (uint64_t)(uintptr_t)t->mem; p->rb_shift = rb_packed_shift(t->d.format);
+    *p = q; p->gpu = gpu; p->serial = t->serial; p->pool = t->pool; p->mem = (uint64_t)(uintptr_t)t->mem; p->rb_shift = rb_packed_shift(t->d.format);
     uint32_t rows = th / (uint32_t)bh, sh = 0; while ((8u << sh) < rows) sh++;
     p->td = (nvn_texdesc){.target = NVN_TEXTURE_TARGET_2D, .format = t->d.format, .width = tw, .height = th, .depth = 1, .levels = 1, .pkg_block_h = (int)sh + 1};
     uint32_t n = p->layers * p->per;
@@ -3209,6 +3212,7 @@ static id<MTLTexture> tex_mtl_(const tex_t *ct) {
     if (!packaged && !have && on_sub_thread() && tex_cpu_content(t)) { mtl_tex_cpu_written(t); packaged = 1; }   // storage the CPU wrote before its first use (tex_cpu_content)
     if (packaged) {
         NvPkg *pk = [have isKindOfClass:[NvPkg class]] ? have : nil;   // resolved as GPU-only before the CPU wrote it: dropped and rebuilt as packaged
+        if (pk && sp_gpu(pk->sp)) pk = nil;
         if (pk && pk->sp) return sp_resolve(pk);
         if (pk) {   // Already uploaded: check the covered pages only if there has been a guest write since the last check
             if (g_nabs) pkg_absorb_take(pk, t);
@@ -3238,7 +3242,7 @@ static id<MTLTexture> tex_mtl_(const tex_t *ct) {
             return pk->view ? pk->view : pk->tex;
         }
         int retry = 0;
-        if ((pk = sp_new(t, &retry))) { tex_put(t->serial, pk); return pk->view ? pk->view : pk->tex; }
+        if ((pk = sp_new(t, &retry, 0))) { tex_put(t->serial, pk); return pk->view ? pk->view : pk->tex; }
         if (retry) return nil;
         pk = [NvPkg new];
         pk->sparse = t->pool && nvn_sparse_pool(t->pool); pk->vgen = pk->vseen = nvn_sparse_gen();
@@ -3280,7 +3284,7 @@ static id<MTLTexture> tex_mtl_(const tex_t *ct) {
         return mt;
     }
     if (t->d.flags & NVN_TEXTURE_FLAGS_SPARSE) {
-        int retry = 0; NvPkg *pk = sp_new(t, &retry);
+        int retry = 0; NvPkg *pk = sp_new(t, &retry, 1);
         if (pk) { tex_put(t->serial, pk); return pk->view ? pk->view : pk->tex; }
         if (retry) return nil;
     }
