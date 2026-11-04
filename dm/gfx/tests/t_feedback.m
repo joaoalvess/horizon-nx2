@@ -9,15 +9,18 @@ uint64_t now_ns(void) { return bp_now(); }
 static int checks, failed;
 #define CHECK(c, label) do { checks++; if (!(c)) { failed++; fprintf(stderr, "FAIL: %s\n", label); } } while (0)
 
-static id<MTLTexture> target(tex_t *t, uint64_t serial) {
+static id<MTLTexture> target_levels(tex_t *t, uint64_t serial, int levels) {
     *t = (tex_t){.magic=MAGIC('T','E','X',0), .serial=serial};
     t->d = (nvn_texdesc){.target=NVN_TEXTURE_TARGET_2D, .format=NVN_FORMAT_RGBA8,
-        .width=4, .height=4, .depth=1, .levels=1, .samples=1};
+        .width=4, .height=4, .depth=1, .levels=levels, .samples=1};
     MTLTextureDescriptor *d = tex_desc(t, 0); d.storageMode = MTLStorageModeShared;
     id<MTLTexture> texture = [g_dev newTextureWithDescriptor:d];
     CHECK(texture != nil, "render target created");
     res_add(texture); mtl_tex_init(t); serial_put(serial, texture);
     return texture;
+}
+static id<MTLTexture> target(tex_t *t, uint64_t serial) {
+    return target_levels(t, serial, 1);
 }
 static void clear(MTLClearColor color) {
     R.clear_c[0] = 1; R.cc[0] = color;
@@ -80,6 +83,37 @@ static void slot_case(NvProg *pr, id<MTLRenderPipelineState> pipeline, int slot,
     pixels(result, 1024, (const uint8_t[]){0, 255, 0, 255}, "following draw reads the green original attachment");
     printf("feedback slot %d: %s\n", slot, before == failed ? "PASS" : "FAIL");
     mtl_tex_release(&source); mtl_tex_release(&output);
+}
+// Mip-chain passes: a draw rendering one level of a texture whose view it samples reads a view without the attached level. Downsampling (the level below) keeps the view of the
+// levels below; a sampler whose LOD clamp pins one level (fb_pinned_level) reads that level alone, also above the attachment's (an upsample: level n from n + 1) and while
+// rendering the view's base level, which the levels below could not reach (the view clamped the read to n - 1, or none was made)
+static void mip_chain_case(NvProg *pr) {
+    const int tid = 671, sid = 672; NvShader *fs = pr->sh[1]; nvn_rbind keep[2] = {fs->rf.b[0], fs->rf.b[1]}; int keep_nb = fs->rf.nb;
+    fs->rf.nb = 2; fs->rf.b[0] = (nvn_rbind){.kind=NVN_RB_TEX, .reg=0, .aid=0, .dtt=MTLTextureType2D}; fs->rf.b[1] = (nvn_rbind){.kind=NVN_RB_SAMPT, .reg=0, .aid=1};
+    tex_t chain; id<MTLTexture> original = target_levels(&chain, 99800, 3);   // 4x4, 2x2, 1x1
+    mtl_reg_tex(tid, &chain, NULL);
+    state_reset(); memset(&R, 0, sizeof R); mtl_sub_begin();
+    R.has_rt = 1; R.rt.n = 1; R.rt.color[0] = &chain; R.rt.has_cview[0] = 1; S.tex[1][0] = tid | (uint64_t)sid << 20;
+    struct { int level, lod_min, lod_max, minf, want_n, want_level, want_levels; const char *label; } c[] = {
+        {1, 2, 2, 5, 1, 2, 1, "an upsample's sampler pins the level above: that level alone"},
+        {1, 0, 0, 5, 1, 0, 1, "a sampler pinning the level below: that level alone"},
+        {1, -1000, 1000, 5, 1, 0, 1, "a sampler that pins no level: the levels below"},
+        {1, 2, 2, 1, 1, 0, 1, "no mip filter: the levels below"},
+        {0, 1, 1, 5, 1, 1, 1, "rendering the base level, the sampler pins level 1: that level alone"},
+        {0, -1000, 1000, 5, 0, 0, 0, "rendering the base level, no level pinned: left as is"},
+    };
+    for (unsigned i = 0; i < sizeof c / sizeof *c; i++) {
+        samp_par sp = {.minf = (uint8_t)c[i].minf, .magf = 1, .ws = 2, .wt = 2, .wr = 2, .lod_min = c[i].lod_min, .lod_max = c[i].lod_max, .aniso = 1}; mtl_reg_samp(sid, &sp);
+        R.rt.cview[0] = (view_t){.set_levels=1, .base_level=c[i].level, .nlevels=1};
+        clear(MTLClearColorMake(0, 0, 0, 1)); fb_prepare(pr);
+        id<MTLTexture> use = g_fb_n ? g_fb_use[0] : nil;
+        printf("%s: %d views, level %lu+%lu\n", c[i].label, g_fb_n, (unsigned long)use.parentRelativeLevel, (unsigned long)use.mipmapLevelCount);
+        CHECK(g_fb_n == c[i].want_n && (!c[i].want_n || (use.parentTexture == original && (int)use.parentRelativeLevel == c[i].want_level && (int)use.mipmapLevelCount == c[i].want_levels)), c[i].label);
+        rp_end();
+    }
+    CHECK(mtl_wait(mtl_sub_commit(), 5000000000ull) && !mtl_last_commit_error(), "mip-chain submission completed without error");
+    fs->rf.nb = keep_nb; fs->rf.b[0] = keep[0]; fs->rf.b[1] = keep[1];
+    mtl_tex_release(&chain);
 }
 // The rule without a listed shader: copy once, reuse until a barrier, end the pass when an earlier draw of it read the attachment directly.
 static void reuse_case(NvProg *pr) {
@@ -153,6 +187,7 @@ int main(void) { @autoreleasepool {
     const int slots[] = {0, 128, 255};
     for (int i = 0; i < 3; i++) slot_case(pr, pipeline, slots[i], i);
     reuse_case(pr);
+    mip_chain_case(pr);
     printf("feedback snapshot: %d checks, %d failed\n", checks, failed);
     return failed != 0;
 } }
