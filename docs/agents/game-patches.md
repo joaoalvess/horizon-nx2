@@ -40,7 +40,7 @@ Every patch bound tighter than it could be: the open gaps, then the blocked, kep
 | `build` → `host` | frame limiter wait: yield → sleep | power | gap | checked: Mac runs with the cut undone, 2026-10-26 (the game note) | 1 | [Fire Emblem: Three Houses](../../dm/games/010055D009F78000/README.md) | without it the host's yield back-off (thr_yield) holds 59.7 to 59.8 fps, at 0.9 to 1.2 W of CPU against 0.14 to 0.42 W (2026-10-26): a back-off that reaches a yield-and-tick loop's deadline sooner would make the cut unnecessary for every game |
 | `game` → `host` | CPU vertex conversion over the vertices a draw reads | power | gap | judgement | 1 | `vconv_range`: [Hyrule Warriors: Age of Calamity](../../dm/games/01002B00111A2000/README.md) | the same vertices as the whole range, for less work; DM_NVN_VCONV_CHECK checks it: a default for every game after `regress.py check` on the games |
 | `game` → `host` | MTL4Compiler pipelines on iOS | rendering | gap | judgement | 1 | `pso_mtl4`: [The Legend of Zelda: Breath of the Wild](../../dm/games/01007EF00011E000/README.md) | a setting the game was tested with on an iPhone: a default for every game after `regress.py check` on the games |
-| `game` → `host` | one vertex shader's visibility counter (VertexCounterLowering) | shaders | gap | judgement | — | [Program.cs:243](../../dm/gfx/tools/dmsh_xlate/Program.cs#L243) | a general lowering of subgroup ballots in vertex shaders would cover any shader that counts that way |
+| `game` → `host` | one vertex shader's visibility counter (VertexCounterLowering) | shaders | gap | judgement | — | [Program.cs:244](../../dm/gfx/tools/dmsh_xlate/Program.cs#L244) | a general lowering of subgroup ballots in vertex shaders would cover any shader that counts that way |
 | `build` → `engine` | Unity QualitySettings.vSyncCount held at 1 | frame rate | gap | judgement | 1 | [Fire Emblem Engage](../../dm/games/0100A6301214E000/README.md) | an IL2CPP player registers the setter by its icall name, so the place can be found in any Unity game; holding it at 1 stays this profile's choice (its logic steps by the count) |
 | `build` → `engine` | Unity's Application.targetFrameRate at a fixed address | frame rate | gap | judgement | 1 | [Pokémon Brilliant Diamond](../../dm/games/0100000011D90000/README.md) | an IL2CPP player registers the setter by its icall name, so the field can be found in any Unity game; whether to raise it stays the profile's |
 | `build` → `game` | frame limiter 30 → 60 fps and the 1/60 update step | frame rate | gap | judgement | 1 | [DARK SOULS: REMASTERED](../../dm/games/01004AB00A260000/README.md) | the game's own limiter constant and fixed step |
@@ -612,7 +612,7 @@ Applied to the `sdk` of any build without CUTS, found by function fingerprint ([
 
 ## Translator rules keyed by a shader's code
 
-- [Program.cs:243](../../dm/gfx/tools/dmsh_xlate/Program.cs#L243): Tears of the Kingdom 1.4.3 visibility counter (one vertex shader, exact code SHA-256 below) (**`game` → `host`**, gap: a general lowering of subgroup ballots in vertex shaders would cover any shader that counts that way)
+- [Program.cs:244](../../dm/gfx/tools/dmsh_xlate/Program.cs#L244): Tears of the Kingdom 1.4.3 visibility counter (one vertex shader, exact code SHA-256 below) (**`game` → `host`**, gap: a general lowering of subgroup ballots in vertex shaders would cover any shader that counts that way)
 
 ## Profile switches
 
