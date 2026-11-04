@@ -10,7 +10,7 @@
 #include <unistd.h>
 
 enum { FMT_PCM16 = 2, STATE_STARTED = 0, STATE_STOPPED = 1, RATE = 48000 };
-enum { BK_NONE, BK_AU, BK_NULL };   // what is consuming an output's queue right now (aout.backend)
+enum { BK_NONE, BK_AU, BK_NULL, BK_STREAM };   // what is consuming an output's queue right now (aout.backend)
 
 typedef struct { void *ptr; uint64_t cap, size; } gbuf;     // The first 24 bytes written into the guest AudioOutBuffer
 #define QMAX 64
@@ -264,6 +264,39 @@ static void null_stop(aout *a) { atomic_store_explicit(&a->null_run, 0, memory_o
 static void backend_stop(aout *a) {
     if (a->backend == BK_AU) { AudioOutputUnitStop(a->au); a->backend = BK_NONE; }
     else if (a->backend == BK_NULL) null_stop(a);
+    else if (a->backend == BK_STREAM) a->backend = BK_NONE;
+}
+enum { STREAM_FRAMES = RATE / 200 };
+static int g_streaming;
+static pthread_t g_stream_th;
+static _Atomic int g_stream_run;
+static void (*g_stream_sink)(uint64_t time_ns, const int16_t *pcm, int frames);
+static void stream_pull(aout *a, int16_t *out) {
+    if (a->ch == 2 || a->ch == 6) { pull_device(a, (uint8_t *)out, STREAM_FRAMES * 2 * sizeof *out); return; }
+    int16_t raw[STREAM_FRAMES * 8] = {0};
+    pull(a, (uint8_t *)raw, (uint64_t)STREAM_FRAMES * 2 * a->ch);
+    for (int i = 0; i < STREAM_FRAMES; i++) { out[2 * i] = raw[i * a->ch]; out[2 * i + 1] = raw[i * a->ch + (a->ch > 1)]; }
+}
+static void *stream_sink(void *p) {
+    (void)p; dm_host_helper_qos(QOS_CLASS_USER_INTERACTIVE);
+    uint64_t t = now_ns();
+    while (atomic_load_explicit(&g_stream_run, memory_order_acquire)) {
+        t += 5000000; uint64_t now = now_ns();
+        if (t > now) usleep((useconds_t)((t - now) / 1000)); else if (now - t > 100000000) t = now;
+        int32_t mix[STREAM_FRAMES * 2] = {0}; int16_t one[STREAM_FRAMES * 2], out[STREAM_FRAMES * 2];
+        pthread_mutex_lock(&g_aos_lock);
+        void (*sink)(uint64_t, const int16_t *, int) = g_stream_sink;
+        for (int i = 0; i < AOMAX; i++) {
+            aout *a = g_aos[i];
+            if (!a || a->backend != BK_STREAM) continue;
+            stream_pull(a, one);
+            for (int k = 0; k < STREAM_FRAMES * 2; k++) mix[k] += one[k];
+        }
+        pthread_mutex_unlock(&g_aos_lock);
+        for (int k = 0; k < STREAM_FRAMES * 2; k++) out[k] = (int16_t)(mix[k] > 32767 ? 32767 : mix[k] < -32768 ? -32768 : mix[k]);
+        if (sink) sink(t, out, STREAM_FRAMES);
+    }
+    return NULL;
 }
 static int real_audio(void) { const char *e = getenv("DM_AUDIO"); return e ? atoi(e) != 0 : TARGET_OS_IPHONE; }
 // Start the AudioUnit of an output whose backend is BK_NONE (callers hold g_aos_lock). When the device refuses (the session is held by a call, or is being reset), the silent sink stands in and the watchdog retries
@@ -390,7 +423,8 @@ static Result au_start_at(void *g, void *lr) {
     int was = atomic_exchange_explicit(&a->state, STATE_STARTED, memory_order_acq_rel);
     au_note(a, was == STATE_STARTED ? "Start (already playing)" : g_suspended ? "Start (app in the background: the silent sink takes over for now)" : "Start", lr);
     if (was != STATE_STARTED) {
-        if (a->au && !g_suspended) { a->stalled = 0; au_go(a, now_ns()); }
+        if (g_streaming) a->backend = BK_STREAM;
+        else if (a->au && !g_suspended) { a->stalled = 0; au_go(a, now_ns()); }
         else null_start(a);
     }
     pthread_mutex_unlock(&g_aos_lock);
@@ -566,4 +600,32 @@ void dm_audio_reset(void) {
     }
     LOG("audio outputs set up again after the media services reset");
     pthread_mutex_unlock(&g_aos_lock);
+}
+void dm_audio_stream(void (*sink)(uint64_t time_ns, const int16_t *pcm, int frames)) {
+    int join = 0;
+    pthread_mutex_lock(&g_aos_lock);
+    if (sink && !g_streaming) {
+        g_streaming = 1; g_stream_sink = sink;
+        for (int i = 0; i < AOMAX; i++) {
+            aout *a = g_aos[i];
+            if (!a || atomic_load_explicit(&a->state, memory_order_acquire) != STATE_STARTED) continue;
+            backend_stop(a); a->backend = BK_STREAM;
+        }
+        atomic_store_explicit(&g_stream_run, 1, memory_order_release);
+        if (pthread_create(&g_stream_th, NULL, stream_sink, NULL)) die("audio: cannot start the stream sink");
+        LOG("audio: the stream client takes the sound of every output, mixed to stereo; the Mac plays none");
+    } else if (!sink && g_streaming) {
+        g_streaming = 0; g_stream_sink = NULL;
+        for (int i = 0; i < AOMAX; i++) {
+            aout *a = g_aos[i];
+            if (!a || a->backend != BK_STREAM) continue;
+            a->backend = BK_NONE;
+            if (a->au && !g_suspended) { a->stalled = 0; au_go(a, now_ns()); } else null_start(a);
+        }
+        atomic_store_explicit(&g_stream_run, 0, memory_order_release);
+        join = 1;
+        LOG("audio: back on the Mac's output");
+    }
+    pthread_mutex_unlock(&g_aos_lock);
+    if (join) pthread_join(g_stream_th, NULL);
 }
