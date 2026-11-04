@@ -166,7 +166,7 @@ Each render pass binds the argument tables `g_vt` (vertex) and `g_ft` (fragment)
 ## 7. Argument encoding: `encode_args_` (`nvn_mtl.m:7941-8216`)
 
 1. `args_sync_dirty` (`:7764-7769`, called at `:7945`) marks every stage dirty when `g_reg_gen`, `nvn_dirty_now()` or `g_ser_gen` changed.
-2. Reuse (`:7946-7948`): `bind_args` (`:7771-7775`) binds the shader's cached block (`ab_buf`, `ab_gpu`, `ab_off`; `NvShader` `:4379`), and `g_stat_args_reuse++` counts it, when all of these hold (`:7946`):
+2. Reuse (`:7946-7948`): `bind_args` (`:7771-7775`) binds the shader's cached block by its GPU address (`ab_gpu`; `ab_buf` only marks it as encoded since refactor item C1; `NvShader` `:4379`), and `g_stat_args_reuse++` counts it, when all of these hold (`:7946`):
    - `!passdump()`, and the stage is not compute (`nvn_stage != 5`: compute blocks are never reused);
    - the stage is clean and `sh->ab_pass == g_pass.serial`;
    - a shader that reads the driver bank has the same `ab_binst` (`g_draw_binst`);
