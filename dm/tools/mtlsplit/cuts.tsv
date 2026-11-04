@@ -1,0 +1,26 @@
+# Upward references the plan cuts before the moves (agents/refactor/plan.md, Modules: cuts 2 and 3; D6), which modmap.py leaves out of the layering check.
+# A cut that lands deletes its row; a row whose reference no longer exists is reported as stale. Calls from a module into dump or capture (the
+# diagnostic modules) from a module below them go through the hook table (cut 2) and are listed by modmap.py, not here.
+# kind	from	to	cut
+call	blit_raw	rp_end	cut 2: the pass-end const table
+call	ubd_land	rp_end	cut 2: the pass-end const table
+call	rp_end	fz_end	cut 2: the pass-merge const table defined by rewrite
+call	rp_begin_ex_	fz_load_covers	cut 2: the pass-merge const table defined by rewrite
+call	post_run	mirror_rb_land	cut 2: the post op carries its land function (post_op.land)
+call	pso_get_	pso_predict_rest	cut 2: the pipeline-miss const table defined by warm
+call	shmap_load	warm_start	cut 2: the shader-map-loaded const table defined by warm
+call	pend_add	vc_gpu_write	cut 2: the GPU-write const table defined by vin
+call	drw_drained	args_dirty_all	cut 1: args_dirty_all moves to state
+call	geo_mesh_draw	draw	D6: mtl_replay.h
+call	geo_raster	draw	D6: mtl_replay.h
+call	defer_replay	draw	D6: mtl_replay.h
+call	defer_fallback	draw	D6: mtl_replay.h
+call	fz_check_run	draw	D6: mtl_replay.h
+call	cs_hoist_try	dispatch	D6: mtl_replay.h
+data	fb_prepare	g_fz	cut 3: a state-owned merge flag written where g_fz.active is
+data	rt_range_same	g_fz	cut 3: a state-owned merge flag written where g_fz.active is
+data	sub_cut	g_defer_nact	cut 3: sub_cut takes busy from its callers
+data	sub_cut	g_defer_pend	cut 3: sub_cut takes busy from its callers
+data	sub_cut	g_fz	cut 3: sub_cut takes busy from its callers
+data	state_op	g_treg	cut 3: the PD formatter becomes a hook
+data	state_op	g_ntreg	cut 3: the PD formatter becomes a hook

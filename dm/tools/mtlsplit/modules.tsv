@@ -1,0 +1,34 @@
+# The modules of nvn_mtl.m in extraction order (agents/refactor/plan.md, Modules): each calls only modules above it in this list.
+# number	module	concern
+1	prof	diagnostic plumbing every module may call: CPU profile, wait and boot stats, A/B phases, GPU frame tags, passdump, the hook table
+2	dev	Metal device and queues, residency, host libraries, hot switches
+3	texfmt	stateless texture-format helpers
+4	rec	the encode-thread recorder and the uniform-copy thread
+5	fence	fences, completion, waits, deferred release, post-ops, queries and conditional rendering, the submission serial
+6	parch	the Metal 4 compiler, binary archives, library files
+7	mem	memory pools, guest-to-Metal addresses, per-submission arenas
+8	serial	object-id maps and the serial table, aliases, ghosts
+9	shader	the shader map, function loading and specialisation, programs, builtins
+10	state	the draw state S, the pass state R, g_pass, save / restore, the replay cursor
+11	hazard	write tracking (pending writes, epochs), uniform patch lookups, GPU-written memory
+12	sink	the open command buffer and encoders, the enc_* wrappers, argument-table filters, the copy and compute encoder, buffer copy / fill / update, deferred inline updates
+13	upload	the upload batch, zero and initial fills, old-queue synchronisation
+14	sparse	sparse textures and tiles
+15	vin	vertex input: buffers, formats, conversions, pull layouts
+16	tex	host textures for guest textures: creation, upgrade, packages, CPU-written and linear textures, mirror readbacks
+17	pso	pipeline keys, descriptors, builds, pending builds, hybrids, depth-stencil states, the compute pipeline cache
+18	treg	the descriptor registry (textures, images, samplers), views, texel buffers, finalisation
+19	tbdr	tile-memory optimisations: store lookahead, attachment ledger, zero-source skip
+20	pass	render passes and their encoder state machine, segments, allocators
+21	present	present queue, display link and pacing, MetalFX, snapshots, streaming
+22	ixconv	index, indirect and multi-draw conversions
+23	args	argument encoding (encode_args_)
+24	xfer	copies, clears, lazy clears, texel readbacks, DLSS
+25	warm	prepare, shader and pipeline prewarm, prebuild, predicted pipelines
+26	dump	pass dumps and reports behind the hook table
+27	rewrite	replay rewrites: deferred draws, pass fusion, hoists, load elision
+28	capture	frame capture
+29	geo	geometry emulation, mesh draws, transform feedback
+30	draw	the draw and dispatch ops (draw_, dispatch, image_prepare)
+31	exec	one submission: mtl_sub_begin, the op loop mtl_exec, mtl_sub_commit, mtl_submit
+32	facade	what stays in nvn_mtl.m: mtl_init as the composition root, a few public wrappers

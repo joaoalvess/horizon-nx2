@@ -789,6 +789,7 @@ Each game's notes are in its profile folder, `dm/games/<id>/README.md`: what the
 | `nro_collect.py` | The NRO modules a game registers in its NRRs, found as loose files, among an indexed archive's current files (`data.arc`) or by a scan, written out for the rewriter with `nro.tsv`; online SDKs are listed as refused |
 | `nvn_slots_got.py` | Builds the NVN fetch table and call sites (GOT-indirect loaders) |
 | `loader_census.py` | Which of the functions a name loader fetches (glad's GL loader over `eglGetProcAddress`, NVN's C proc loader) the code really calls: the GOT slots or globals the loader stores, loaded by other code (followed through registers, relocated GOT entries and `csel`, for LÖVE's glad) |
+| `mtlsplit/` | The split of `nvn_mtl.m` into modules (stage M of `agents/refactor/plan.md`): the facts of its translation unit from clang's AST, the module map, the move tool, the move check and the call check ([Splitting nvn_mtl.m](#splitting-nvn_mtlm)) |
 
 ### IL2CPP method lookup
 
@@ -803,3 +804,23 @@ python3 dm/tools/il2cpp_sym.py "$W/extract/exefs/main" "$W/il2cpp/script.json" -
 The tool loads NSO/NRO segments with `nso.py`, prints the `ScriptMethod` name plus the offset into it, and annotates direct `b`/`bl` targets with Capstone. Aliases at one address are sorted and shown together. The table has no method sizes and leaves out native code, so the tool bounds each name by the module's `.eh_frame` functions (`nso_code.fde_ranges`; IL2CPP keeps unwind tables for its C++ exceptions, and they cover 98% of BALL x PIT's text): the nearest preceding method is named only when it starts in the function that holds the address. An address in a function no method starts prints `unknown (function 0x…+0x…)`, and one outside every function `unknown`; a module without `.eh_frame` ranges is an error. Use the exact original module/build that produced the table: inputs and `ScriptMethod.Address` must be module-relative offsets, not compressed-file offsets or absolute guest/Ghidra addresses. It rejects out-of-text addresses.
 
 For NSOs with separate file and memory offsets, Il2CppDumper's [NSO reader](https://github.com/Perfare/Il2CppDumper/blob/master/Il2CppDumper/ExecutableFormats/NSO.cs) may fail with `Sequence contains no matching element` while mapping MOD0. If its source still has `Position = header.TextSegment.FileOffset + modOffset + 4;`, change that line to `Position = MapVATR(modOffset) + 4;` and rebuild the dumper with the SDK its project targets. The correction is conditional and applies to the external dumper; it is not vendored here. Keep metadata, dumper output and all extracted files in the game's NSP work folder.
+
+### Splitting nvn_mtl.m
+
+The tools in `dm/tools/mtlsplit` take one module of the module map (its rows in `modules.tsv`, `functions.tsv` and `globals.tsv`; `cuts.tsv` lists the upward references the plan cuts first) out of `nvn_mtl.m`, `nvn_rec.h` and the `.inc` files. Keep their outputs out of the repository:
+
+```bash
+O=<a folder on the game drive>
+# the facts of the translation unit (clang -ast-dump with the host's compile line; --reuse parses a kept dump again)
+python3 dm/tools/mtlsplit/facts.py --game 0400A3A01EE4C000 --out $O/facts.json --ast $O/mtl.ast.gz
+# the map: the module of every line, the edges, upward references, hook calls, splits, rows not in the tables and stale rows
+python3 dm/tools/mtlsplit/modmap.py --facts $O/facts.json --out $O/map.json --report $O/map.md
+# a module moved verbatim into dm/gfx/nvn/mtl_<module>.m / .h: as a patch (--patch), or written (--apply); -v lists the exported names
+python3 dm/tools/mtlsplit/move.py --map $O/map.json --module prof --unity dm/gfx/nvn/nvn_mtl_all.inc --patch $O/prof.patch -v
+# the move check of a patch (or of a commit: --rev; a cut commit: --kind cut --edits <its listed edits>)
+python3 dm/tools/mtlsplit/movecheck.py --patch $O/prof.patch
+# the call check of two hosts (draw_, encode_args_, rp_begin_ex_, rp_end and the functions that inline tex_fast*; callcheck_allow.tsv, callcheck_callers.tsv)
+python3 dm/tools/mtlsplit/callcheck.py --base <previous dmhost> --new dm/host/dmhost
+```
+
+The map is made again after each move commit. The move tool refuses a map older than the tree, a module that still needs code left in `nvn_mtl.m`, a line it cannot split and a header `nvn_mtl.m` includes after its `#pragma clang attribute push` that holds a macro, a conditional, a `#pragma`, ObjC or mutable state (a module copies such a header only when it names something the header declares); the facts come from the Mac compile line, so code under `#if TARGET_OS_IPHONE` or a test-only `#ifdef` moves with its group but is not read. Besides the linkage edits, the move check accepts the edits the move tool makes: split declaration lists, the module's prelude, the header's declarations and the `#include` lines. The call check compares call counts per callee, takes symbols the linker folded to one address together, folds in the body of a callee the new host calls fewer times (assumed inlined at more sites; each body callee up to its rise, never one with an inline row; counts cannot tell this from call sites merged into one, so the report lists what each fold explains), and compares a checked function ThinLTO inlined in one binary through its callers; its callers table is frozen from the map M0 starts from, since a later map no longer lists the calls into moved modules.

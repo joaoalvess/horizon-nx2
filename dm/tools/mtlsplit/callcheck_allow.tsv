@@ -1,0 +1,62 @@
+# The call check's allowlist (callcheck.py): the treatment agents/refactor/reports/20261104-1415-module-map.md section 6 and plan D8 give the calls of the
+# hot functions that cross a module boundary. allow: a new call accepted (out of line by design); inline: a callee that must stay inline (header inline or
+# static beside its caller), a new call to it being a defect. function '*' is any checked function; a callee may end in '*'; '@cross' is any callee of
+# another module than the caller's (with --map). A new call no allow row covers is a defect (D8: single-caller callees on the per-draw and per-binding paths).
+# verdict	function	callee	why
+inline	*	enc_r_*	section 6: per-draw encoder calls, static inline always_inline in mtl_sink.h
+inline	*	args_dirty_all	section 6: per-draw state, header inline
+inline	*	rt_sub	section 6: per-draw state, header inline
+inline	*	rt_same	section 6: per-draw state, header inline
+inline	*	rt_dup_slot	section 6: per-draw state, header inline
+inline	*	passdump	section 6: the off test inline, the body out of line
+inline	*	cp_begin	section 6: the off test inline, the body out of line
+inline	*	cp_end	section 6: the off test inline, the body out of line
+inline	*	ub_skip	section 6: the off test inline, the body out of line
+inline	*	vbuf_prepare	section 6: per-draw vertex input, header inline
+inline	*	pull_bind	section 6: per-draw vertex input, header inline
+inline	*	ixc_wanted	section 6: per-draw guard, header inline
+inline	*	wide_wanted	section 6: per-draw guard, header inline
+inline	*	mdx_wanted	section 6: per-draw guard, header inline
+inline	*	defer_has_in_p	section 6: per-draw guard, header inline
+inline	*	swrite_note	section 6: per-draw guard, header inline
+inline	*	pend_hits	section 6: per-draw guard, header inline
+inline	*	arena_alloc	section 6: memory fast path, header inline (the slow path arena_new out of line)
+inline	*	mtl_addr	section 6: memory fast path pc_get, header inline
+inline	*	mtl_gpu_addr	section 6: memory fast path pc_get, header inline
+inline	*	pc_get	section 6: memory fast path, header inline
+inline	*	tex_fast	section 6: per binding, header inline (always_inline)
+inline	*	tex_fast_rid	section 6: per binding, header inline (always_inline)
+inline	*	samp_fast	section 6: per binding, header inline (always_inline)
+inline	*	tex_slot_h	section 6: per binding, header inline
+inline	*	sbw_len	section 6: per binding, header inline
+allow	*	pso_get	section 6: per-draw pipeline, out of line (called on change only)
+allow	*	pso_get_	section 6: per-draw pipeline, out of line (called on change only)
+allow	*	dss_get	section 6: per-draw pipeline, out of line (called on change only)
+allow	*	bind_vbufs	section 6: per-draw vertex input, one call per draw
+allow	*	vconv_bind	section 6: per-draw vertex input, one call per draw
+allow	*	tbdr_on	section 6: per-draw switch with a lazy static; out-of-line call until resolved at init
+allow	*	rt_range_on	section 6: per-draw switch with a lazy static; out-of-line call until resolved at init
+allow	*	sm_on	section 6: per-draw switch with a lazy static; out-of-line call until resolved at init
+allow	*	enc_label_on	section 6: per-draw switch with a lazy static; out-of-line call until resolved at init
+allow	*	cshoist_on	section 6: per-draw switch with a lazy static; out-of-line call until resolved at init
+allow	*	atest_on	section 6: per-draw switch with a lazy static; out-of-line call until resolved at init
+allow	*	lop_on	section 6: per-draw switch with a lazy static; out-of-line call until resolved at init
+allow	*	zskip_can_draw	section 6: conditional work, the body out of line behind its guard
+allow	*	udc_note_draw	section 6: conditional work, the body out of line behind its guard
+allow	*	pass_ds_need	section 6: conditional work, the body out of line behind its guard
+allow	*	lc_take	section 6: conditional work, the body out of line behind its guard
+allow	*	defer_take	section 6: conditional work, the body out of line behind its guard
+allow	*	hoist_try	section 6: conditional work, the body out of line behind its guard
+allow	*	defer_try	section 6: conditional work, the body out of line behind its guard
+allow	*	fuse_try	section 6: conditional work, the body out of line behind its guard
+allow	*	cs_hoist_try	section 6: conditional work, the body out of line behind its guard
+allow	*	ubd_lazy	section 6: conditional work, the body out of line behind its guard
+allow	*	arena_new	section 6: memory slow path, out of line
+allow	*	ubp_get	section 6: per binding, a call
+allow	*	sbw_note	section 6: per binding, a call
+allow	*	tex_mis_note	section 6: per binding, a call (miss only)
+allow	*	tbuf_as_2d	section 6: per binding, a call (texel buffers only)
+allow	*	ubd_hits	section 6: per binding, only while deferred updates are pending (the g_nubd guard inline)
+allow	*	ubd_covers	section 6: per binding, only while deferred updates are pending (the g_nubd guard inline)
+allow	rp_begin_ex_	@cross	section 6 and D8: per pass, out of line
+allow	rp_end	@cross	section 6 and D8: per pass, out of line

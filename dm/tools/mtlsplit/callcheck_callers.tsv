@@ -1,0 +1,49 @@
+# The callers of the call check's functions (callcheck.py: draw_, encode_args_, rp_begin_ex_, rp_end), of tex_fast, tex_fast_rid and samp_fast
+# and of their callers, frozen from the module map M0 starts from (nvn_mtl.m e5532ec12d51; callcheck.py --callers-from), so that the check keeps them once
+# their modules move.
+# function	caller
+draw_	draw
+encode_args_	encode_args
+fb_prepare	draw_
+fz_p2_draw	draw_
+img_binding	encode_args_
+pool_gpu	encode_args_
+rp_begin_ex_	rp_begin_ex
+rp_end	blit_raw
+rp_end	clear_color_tri
+rp_end	clear_ds_tri
+rp_end	clear_tex
+rp_end	clear_tex_tri
+rp_end	copy_t2t
+rp_end	copy_t2t_draw
+rp_end	defer_fallback
+rp_end	dispatch
+rp_end	dlss_eval
+rp_end	draw_
+rp_end	draw_tex
+rp_end	fb_prepare
+rp_end	fz_check_run
+rp_end	geo_draw_
+rp_end	geo_raster
+rp_end	hoist_try
+rp_end	image_prepare
+rp_end	ixc_run
+rp_end	lc_land
+rp_end	mdi_wait
+rp_end	mdx_run
+rp_end	mtl_exec
+rp_end	order_draw
+rp_end	rp_begin
+rp_end	rp_flush
+rp_end	td_dump
+rp_end	tf_prepare
+rp_end	tf_state_gpu
+rp_end	ubd_land
+rp_end	wide_run
+samp_fast	encode_args_
+samp_fast	pool_gpu
+tex_fast_rid	encode_args_
+tex_fast_rid	fb_prepare
+tex_fast_rid	fz_p2_draw
+tex_fast_rid	img_binding
+tex_fast_rid	pool_gpu
