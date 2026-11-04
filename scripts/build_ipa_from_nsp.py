@@ -1284,7 +1284,7 @@ def apple_silicon():   # hw.optional.arm64 is 1 on Apple silicon (for a Python u
     return subprocess.run(['sysctl', '-n', 'hw.optional.arm64'], capture_output=True, text=True).stdout.strip() == '1'
 
 
-HOST_DIRS = ('dm/host', 'dm/gfx', 'dm/gfx/nvn', 'dm/gfx/nvn/include', 'dm/gfx/tex', 'dm/gfx/vk', 'dm/gfx/gl')   # the folders the host's compile line takes its sources and headers from (dm/host/Makefile SRC, GFX, GFX_H)
+HOST_DIRS = ('dm/host', 'dm/gfx', 'dm/gfx/nvn', 'dm/gfx/nvn/include', 'dm/gfx/tex', 'dm/gfx/vk', 'dm/gfx/gl')   # the folders the host's compile lines take their sources and headers from (dm/host/Makefile SRC and GFX, and the headers they include)
 
 
 def decoder_host_key(host):
@@ -1299,19 +1299,22 @@ def decoder_host_key(host):
 
 
 def build_mac_host(repo, out, env, logs, g):
-    """The Mac host for the profile, built into out: dm/host's own compile line (make -n) with the output moved, since make takes no target path with spaces and dm/host/dmhost may be another build's.
-    Reused when the compile line and its inputs (the source files of HOST_DIRS, the chain header dm/gfx/nvn/dmsh_chain.h among them, the profile header make generates, libvpx, dav1d and the third-party headers, the compiler
+    """The Mac host for the profile, built into out: dm/host's objects (make host_obj), then its link line (make -n) with the output moved, since make takes no target path with spaces and dm/host/dmhost may be another build's,
+    and the linker's LTO objects in out.lto, which make dmhost does not delete, until dsymutil has read them. Reused, before any compile, when the compile and link lines and their inputs (the source files of HOST_DIRS, the chain header dm/gfx/nvn/dmsh_chain.h among them, the profile header make generates, libvpx, dav1d and the third-party headers, the compiler
     and the macOS SDK) are as at the last build into out. The host runs the game's own arm64 code natively, so an Intel Mac stops here (GitHub issue #54)"""
     if not apple_silicon(): raise BuildError('this step boots the game in the Mac host, which runs the game\'s own arm64 code natively: it needs a Mac with Apple silicon, and this Mac has an Intel processor')
     host = repo / 'dm/host'
     run(['make', '-s', f'GAME={g.id}', f'gen/{g.id}/game_profile.h', 'gen/vpx/libvpx.a', 'gen/dav1d/libdav1d.a', 'host_msl'], logs / 'mac_host_make.log', env=env, cwd=host)
     dry = subprocess.run(['make', '-n', '-B', f'GAME={g.id}', 'dmhost'], env=env, cwd=host, capture_output=True, text=True)
-    line = next((l for l in dry.stdout.splitlines() if ' -o dmhost ' in l), None)
-    if not line: raise BuildError(f'make -n gave no compile line for the Mac host: {dry.stderr.strip()[-500:]}')
-    cmd = shlex.split(line); cmd[cmd.index('-o') + 1] = out
+    lines = dry.stdout.splitlines()
+    line = next((l for l in lines if ' -o dmhost ' in l), None)
+    if not line: raise BuildError(f'make -n gave no link line for the Mac host: {dry.stderr.strip()[-500:]}')
+    lto = out.with_name(out.name + '.lto')
+    cmd = [t for t in shlex.split(line) if not t.startswith('-Wl,-object_path_lto,')] + ['-Xlinker', '-object_path_lto', '-Xlinker', lto]; cmd[cmd.index('-o') + 1] = out
+    compiles = [l for l in lines if f' -o gen/{g.id}/obj/' in l]
     kf, tp = out.with_name(out.name + '.key'), repo / 'dm/third_party'
     srcs = [p for d in HOST_DIRS for p in sorted((repo / d).iterdir()) if p.is_file() and p.suffix in ('.c', '.m', '.h', '.S', '.inc')]
-    common = fingerprint(cmd, ('files', [host / f'gen/{g.id}/game_profile.h', host / 'gen/msl-macosx/host_msl_gen.h', host / 'gen/vpx/libvpx.a', host / 'gen/dav1d/libdav1d.a', tp / 'stb_vorbis/stb_vorbis.c']),
+    common = fingerprint(cmd, compiles, ('files', [host / f'gen/{g.id}/game_profile.h', host / 'gen/msl-macosx/host_msl_gen.h', host / 'gen/vpx/libvpx.a', host / 'gen/dav1d/libdav1d.a', tp / 'stb_vorbis/stb_vorbis.c']),
                          ('tree', tp / 'vulkan-headers/include'), ('tree', tp / 'libvpx/vpx'), ('tree', tp / 'dav1d/include'), ('cmd', ['clang', '--version']), ('cmd', ['xcrun', '--show-sdk-build-version']), env=env)
     key = fingerprint(common, ('files', srcs))
     chain = repo / CHAIN_H
@@ -1320,8 +1323,11 @@ def build_mac_host(repo, out, env, logs, g):
     chain_text = re.sub(r'(?m)^#define DMSH_CHAIN "[^"]*"$', '#define DMSH_CHAIN "<chain>"', chain.read_text()) if chain.is_file() else None
     decoder = fingerprint('oodle-host-v1', common, ('files', [p for p in srcs if p != chain]), chain_text)
     if out.is_file() and reused(kf, key) is not None and decoder_host_key(out) == decoder: return out
-    rmtree(kf); out.parent.mkdir(parents=True, exist_ok=True)
+    rmtree(kf); rmtree(lto); out.parent.mkdir(parents=True, exist_ok=True)
+    run(['make', '-s', f'-j{os.cpu_count()}', f'GAME={g.id}', 'host_obj'], logs / 'mac_host_obj.log', env=env, cwd=host)
     run(cmd, logs / 'mac_host_build.log', env=env, cwd=host)
+    run(['dsymutil', '-o', f'{out}.dSYM', out], logs / 'mac_host_dsym.log', env=env, cwd=host)
+    rmtree(lto)
     record = out.with_name(out.name + '.decoder.json')
     part = record.with_suffix('.json.partial')
     part.write_text(json.dumps({'format': 1, 'binary': fingerprint(('files', [out])), 'inputs': decoder}) + '\n')

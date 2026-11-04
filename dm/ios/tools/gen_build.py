@@ -1,4 +1,4 @@
-# Take the host's source files / header paths / frameworks from the actually expanded compile commands of dm/host/Makefile (make -n -B dmhost, including the per-file compiles of the libraries it depends on) and generate the iOS project's build inputs,
+# Take the host's source files / header paths / frameworks from the actually expanded compile commands of dm/host/Makefile (make -n -B dmhost: the host's per-file compiles and its link, and the per-file compiles of the libraries it depends on) and generate the iOS project's build inputs,
 # without hand-copying lists: when the Makefile changes, the next iOS build follows automatically.
 #   Gen/src/<flat name>   symlinks to source files (excluding main.c and front_mac.m; main.c is linked separately to Gen/main/main.c and compiled with -Dmain=dm_main)
 #   stdout            xcconfig lines: HEADER_SEARCH_PATHS (-I directories + the directory of every source file, so relative includes resolve as usual),
@@ -10,9 +10,9 @@ host, gen = os.path.abspath(sys.argv[1]), os.path.abspath(sys.argv[2])
 # GAME comes from the environment). The compile command is then the iOS one: its -I names the iOS shader header
 subprocess.run(['make', '-s', '-C', host, 'game_profile', 'host_msl', 'MSL_SDK=iphoneos'], check=True)
 cmd = subprocess.run(['make', '-s', '-n', '-B', '-C', host, 'dmhost', 'MSL_SDK=iphoneos'], capture_output=True, text=True, check=True).stdout
-# The host's own link command (-o dmhost) first, then the per-file compile commands of the libraries it depends on (libvpx): header paths keep this order, so the host's headers are found first
+# The host's own commands (its per-file compiles into gen/<id>/obj and its link, -o dmhost) first, then the per-file compile commands of the libraries it depends on (libvpx, dav1d): header paths keep this order, so the host's headers are found first
 lines = [shlex.split(l) for l in cmd.splitlines() if l.lstrip().startswith('clang')]
-lines.sort(key=lambda t: 'dmhost' not in t)
+lines.sort(key=lambda t: not any(a == 'dmhost' or a.startswith('gen/') and '/obj/' in a for a in t))
 srcs, incs, defs, fws = [], [], [], []
 for toks in lines:
     i = 0
@@ -22,7 +22,7 @@ for toks in lines:
         if t.startswith('-I'):
             d = os.path.normpath(os.path.join(host, t[2:]))
             if d not in incs: incs.append(d)
-        elif t.startswith('-D'): defs.append(t)
+        elif t.startswith('-D') and t not in defs: defs.append(t)
         elif t.endswith(('.c', '.m', '.S')): srcs.append(os.path.normpath(os.path.join(host, t)))
         i += 1
 assert srcs, 'no source files in the compile command'

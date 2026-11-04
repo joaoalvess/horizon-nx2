@@ -12,6 +12,9 @@
 #include "stream_proto.h"
 #include "dm_input.h"
 #include <math.h>
+#if __has_include("host_rev.h")
+#include "host_rev.h"
+#endif
 
 #ifndef DM_HOST_REV
 #define DM_HOST_REV "unknown"

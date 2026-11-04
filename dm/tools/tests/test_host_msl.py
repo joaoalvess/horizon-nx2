@@ -165,11 +165,11 @@ class HostMSL(unittest.TestCase):
         builds = []
 
         def run(cmd, log, env=None, cwd=None):
-            if cmd[0] == 'make':
+            if cmd[0] == 'make' and 'host_obj' not in cmd:
                 self.assertIn('host_msl', cmd)
                 p = real_run(['make', '-s', f'GAME={GAME}', 'host_msl'], cwd=cwd, env=env, capture_output=True, text=True)
                 self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
-            else:
+            elif cmd[0] not in ('make', 'dsymutil'):
                 self.assertTrue(self.header.is_file(), 'direct clang needs the header before its first compile')
                 builds.append(cmd)
                 out.write_bytes(b'host executable')
@@ -198,7 +198,7 @@ class HostMSL(unittest.TestCase):
         profile = self.root / f'dm/host/gen/{GAME}/game_profile.h'; profile.parent.mkdir(parents=True); profile.write_text('#define HEAP 1\n')
         toolchain, builds = ['compiler 1'], []
         def run(cmd, log, env=None, cwd=None):
-            if cmd[0] != 'make':
+            if cmd[0] not in ('make', 'dsymutil'):
                 builds.append(cmd)
                 out.write_bytes(f'host {len(builds)}'.encode())
         def command(cmd, **kw):

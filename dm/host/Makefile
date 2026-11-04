@@ -21,7 +21,6 @@ SRC=main.c loader.c hle.c crash.c probe.c thread.c save_sync.c memstat.m haptics
 # NVN null device + nn::vi + the Vulkan layer (dm/gfx/)
 # Sources under dm/gfx, dm/gfx/nvn, dm/gfx/tex, dm/gfx/vk and dm/gfx/gl are included by wildcard (tests/ and metal/ do not go into the host): adding a file does not touch this line
 GFX=$(sort $(wildcard ../gfx/*.c ../gfx/nvn/*.c ../gfx/nvn/*.m ../gfx/nvn/*.S ../gfx/tex/*.c ../gfx/tex/*.m ../gfx/vk/*.m ../gfx/gl/*.m))
-GFX_H=$(sort $(wildcard ../gfx/nvn/*.h ../gfx/nvn/*.inc ../gfx/nvn/include/*.h ../gfx/tex/*.h))   # *.inc: nvn_mtl.m includes them (nvn_geometry.inc); an edit there alone used not to rebuild the host
 # Third party: libvpx ships the VP8 and VP9 decoder sources (movie decoding, hle_movie.c), with its configuration headers in config/ (arm64, shared by Mac and iOS). Built separately into a static library, file by file, so host changes do not recompile it
 VPX=../third_party/libvpx
 VPX_SRC=$(sort $(shell find $(VPX) -name '*.c'))
@@ -76,8 +75,26 @@ endif
 endif
 .PHONY: FORCE
 FORCE:
-dmhost: $(SRC) $(GFX) ../third_party/stb_vorbis/stb_vorbis.c dm.h hle.h romfs_image.h save_sync.h stream_proto.h dm_input.h pad_slots.h hle_haptics.h haptics_apple.h motion_fusion.h motion_apple.h motion_pro.h motion_pro_mac.h pad_apple.h pad_hid.h pad_hid_mac.h front.h $(GFX_H) $(GAME_H) $(GAME_STAMP) $(VPX_LIB) $(DAV1D_LIB) $(MSL_H)
-	clang $(CFLAGS) -I../gfx/nvn/include -I$(dir $(MSL_H)) -I../third_party/vulkan-headers/include -I$(dir $(GAME_H)) -I$(VPX) -I$(DAV1D)/include -I../third_party/stb_vorbis -DDM_HOST_REV='"$(shell git -C ../.. describe --always --dirty 2>/dev/null)"' -fobjc-arc -o $@ $(SRC) $(GFX) $(VPX_LIB) $(DAV1D_LIB) -framework Cocoa -framework QuartzCore -framework Metal -framework MetalFX -framework GameController -framework CoreHaptics -framework IOKit -framework AudioToolbox -framework VideoToolbox -framework CoreMedia -framework CoreVideo -framework ImageIO -framework UniformTypeIdentifiers
-clean:   # the host and everything make generates for it (gen/: the profile headers, the game stamp and the libvpx and dav1d builds; dmhost_* and *.dSYM beside them, as in .gitignore)
+REV_H = gen/$(GAME)/host_rev.h
+$(REV_H): FORCE
+	@mkdir -p $(dir $@); r="#define DM_HOST_REV \"$$(git -C ../.. describe --always --dirty 2>/dev/null)\""; echo "$$r" | cmp -s - $@ || echo "$$r" > $@
+OBJ = gen/$(GAME)/obj
+HOST_OBJ = $(patsubst %,$(OBJ)/host/%.o,$(SRC)) $(patsubst ../gfx/%,$(OBJ)/gfx/%.o,$(GFX))
+HOST_CC = clang $(filter-out -Wl%,$(CFLAGS)) -I../gfx/nvn/include -I$(dir $(MSL_H)) -I../third_party/vulkan-headers/include -I$(dir $(GAME_H)) -I$(VPX) -I$(DAV1D)/include -I../third_party/stb_vorbis -fobjc-arc -MMD -MP
+$(OBJ)/host/%.o: % Makefile ../mac/min_os.mk | $(GAME_H) $(REV_H) $(MSL_H)
+	@mkdir -p $(dir $@)
+	$(HOST_CC) -c $< -o $@
+$(OBJ)/gfx/%.o: ../gfx/% Makefile ../mac/min_os.mk | $(GAME_H) $(REV_H) $(MSL_H)
+	@mkdir -p $(dir $@)
+	$(HOST_CC) -c $< -o $@
+-include $(HOST_OBJ:.o=.d)
+.PHONY: host_obj
+host_obj: $(HOST_OBJ)
+dmhost: $(HOST_OBJ) $(GAME_STAMP) $(VPX_LIB) $(DAV1D_LIB)
+	@rm -rf $(OBJ)/lto
+	clang $(CFLAGS) -fobjc-arc -Wl,-object_path_lto,$(OBJ)/lto -o $@ $(HOST_OBJ) $(VPX_LIB) $(DAV1D_LIB) -framework Cocoa -framework QuartzCore -framework Metal -framework MetalFX -framework GameController -framework CoreHaptics -framework IOKit -framework AudioToolbox -framework VideoToolbox -framework CoreMedia -framework CoreVideo -framework ImageIO -framework UniformTypeIdentifiers
+	dsymutil -o $@.dSYM $@
+	@rm -rf $(OBJ)/lto
+clean:   # the host and everything make generates for it (gen/: the profile headers, the host's objects, the game stamp and the libvpx and dav1d builds; dmhost_* and *.dSYM beside them, as in .gitignore)
 	rm -rf gen dmhost dmhost_* *.dSYM
 .PHONY: clean

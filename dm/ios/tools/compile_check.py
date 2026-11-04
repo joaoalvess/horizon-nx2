@@ -14,14 +14,14 @@ env = dict(os.environ, GAME=game)
 subprocess.run(['make', '-s', '-C', host, 'game_profile', 'host_msl', 'MSL_SDK=iphoneos'], check=True, env=env)
 cmd = subprocess.run(['make', '-s', '-n', '-B', '-C', host, 'dmhost', 'MSL_SDK=iphoneos'], capture_output=True, text=True, check=True, env=env).stdout
 lines = [shlex.split(l) for l in cmd.splitlines() if l.lstrip().startswith('clang')]
-lines.sort(key=lambda t: 'dmhost' not in t)   # the host's own command first, as gen_build.py does, so its header paths come before libvpx's
+lines.sort(key=lambda t: not any(a == 'dmhost' or a.startswith('gen/') and '/obj/' in a for a in t))   # the host's own commands first, as gen_build.py does, so its header paths come before libvpx's
 srcs, incs, defs = [], [], []
 for toks in lines:
     for t in toks:
         if t.startswith('-I'):
             d = os.path.normpath(os.path.join(host, t[2:]))
             if d not in incs: incs.append(d)
-        elif t.startswith('-D'): defs.append(t)
+        elif t.startswith('-D') and t not in defs: defs.append(t)
         elif t.endswith(('.c', '.m', '.S')): srcs.append(os.path.normpath(os.path.join(host, t)))
 assert srcs, 'no source files in the compile commands'
 ios_src = os.path.normpath(f'{ios}/Sources')
