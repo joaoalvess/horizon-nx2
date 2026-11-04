@@ -12,6 +12,10 @@ xcodebuild -project Horizon.xcodeproj -scheme HorizonHub -configuration Release 
 app=.build/xcode/Build/Products/Release/HorizonHub.app
 codesign --verify --strict "$app"
 if pgrep -xq HorizonHub; then
+    if [ -f "$HOME/Library/Application Support/HorizonHub/games/session.json" ]; then
+        echo "install_hub.sh: HorizonHub is running a game; close it from the menu bar, then run this again" >&2
+        exit 1
+    fi
     osascript -e 'tell application id "dev.joaoalvess.horizon.hub" to quit'
     while pgrep -xq HorizonHub; do sleep 0.2; done
 fi
