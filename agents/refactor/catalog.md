@@ -15,6 +15,13 @@ How to read the tables:
 - **Checked**: `read` means read at the cited lines by the main thread; `review` gives the adversarial review's verdict; `agent` means only the finding agent's word.
 - **State**: `pending`, `committed <hash>`, `reverted (<reason>)` or `dropped (<reason>)`. The main thread sets it; it is the only record of an item's state.
 
+## Tools (found during S0)
+
+| ID | Item | Where | Cost (estimate) | Risk | Checked | Stage | State |
+|---|---|---|---|---|---|---|---|
+| R1 | Replay CPU cannot be measured: `/usr/bin/time` totals are dominated by applying the captured state (~500 ms a replay) and `submit CPU` is wall time. `nvn_replay` prints the replay thread's `submit instructions` and the process's over the submit span | `dm/gfx/tests/nvn_replay.m` | none (tool) | none: the replay is unchanged | review: approve with nits | S0 | committed (`test(replay): count the instructions of the submit`); review `reports/20261104-0522-R1-review.md` |
+| R2 | `DM_NVN_CAPTURE` cannot read back ASTC textures (`cap_pf_block` knows plain and BC formats only), so DK captures replay magenta | `dm/gfx/nvn/nvn_capture.inc:220-228` | none (tool) | low: capture only | search `reports/20261104-0510-R2-search.md` | S0 | implementing |
+
 ## Build
 
 | ID | Item | Where | Cost (estimate) | Risk | Checked | Stage | State |

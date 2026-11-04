@@ -10,6 +10,7 @@
 #import <Foundation/Foundation.h>
 #include <spawn.h>
 #include <sys/wait.h>
+#include <libproc.h>
 #define nvn_game_fps nvn_game_fps_mtl_default
 #include "../nvn/nvn_mtl.m"
 #undef nvn_game_fps
@@ -314,6 +315,7 @@ int main(int argc, char **argv) { @autoreleasepool {
     char live[65]; cap_hex(pres->sha256, live); int same_all = 1, ok_all = 1; uint64_t worst_px = 0;
     for (int rep = 0; rep < warm; rep++) {
         uint64_t exec_ns = 0, setup_ns = 0, pass0 = 0, draw0 = 0, frame_no = rep == 0 && mtl_frame ? mtl_frame : 1000000 + (uint64_t)rep;   // the first replay takes the live frame number (frame-keyed diagnostics)
+        uint64_t exec_in = 0, proc_in = 0;
         if (tdir) { char tp[1200]; snprintf(tp, sizeof tp, "%s/r%d_%%d.png", tdir, index + rep); dm_gfx_texdump_next(tp); g_td_frame = (long)frame_no; }
         if (rep) for (uint32_t r = 0; r < rp_nrg; r++) if (rp_rg[r].mem) memcpy(rp_rg[r].mem, rp_rg[r].orig, (size_t)rp_rg[r].size);   // back to the state at the first submit
         for (uint32_t s = 1; s <= nsub; s++) {
@@ -342,9 +344,11 @@ int main(int argc, char **argv) { @autoreleasepool {
             if (s == 1) mtl_stats(&pass0, &draw0);
             mtl_set_frame(frame_no);
             mtl_set_queue_origin_lower_left(qll);
+            struct rusage_info_v4 ru0 = {0}, ru1 = {0}; proc_pid_rusage(getpid(), RUSAGE_INFO_V4, (rusage_info_t *)&ru0); uint64_t i0 = thr_instr();
             mtl_sub_begin(); nvn_ft_poll(); mtl_sub_index(hs, (int)nh);
             for (uint32_t i = 0; i < nh; i++) { mtl_exec_rest(hs + i + 1, (int)(nh - i - 1)); mtl_exec((const uint8_t *)(uintptr_t)hs[i]); }
             mtl_exec_rest(NULL, 0); mtl_sub_commit();
+            exec_in += thr_instr() - i0; proc_pid_rusage(getpid(), RUSAGE_INFO_V4, (rusage_info_t *)&ru1); proc_in += ru1.ri_instructions - ru0.ri_instructions;
             exec_ns += now_ns() - t1;
             mtl_finish();   // the capture read the next submit's inputs after the GPU finished this one: so does the replay
             free(hs); for (uint32_t i = 0; i < rp_nseg; i++) free(rp_seg[i]);
@@ -396,7 +400,7 @@ int main(int argc, char **argv) { @autoreleasepool {
         uint64_t pass1, draw1; mtl_stats(&pass1, &draw1);
         if (opt_writes) { uint64_t a[6]; mtl_vbuf_stats(&a[0], &a[1], &a[2], &a[3], &a[4], &a[5]); printf("vbuf: resolve %llu reuse %llu set %llu skip %llu unaligned copies %llu (%llu bytes)\n", a[0], a[1], a[2], a[3], a[4], a[5]); }
         if (have_px) printf("replay %d: %llu pixels differ from the live frame (largest byte difference %u, x %u-%u y %u-%u)\n", index + rep, (unsigned long long)npx, big, x0, x1, y0, y1);
-        printf("replay %d: digest %s %s live %s (%ux%u format %u); submit CPU %.2f ms (+ %.2f ms applying the captured state), GPU %.2f ms; %llu passes, %llu draws, %llu segments\n", index + rep, out, same ? "==" : "!=", live, w, h, pf, exec_ns / 1e6, setup_ns / 1e6, gpu,
+        printf("replay %d: digest %s %s live %s (%ux%u format %u); submit CPU %.2f ms (+ %.2f ms applying the captured state), submit instructions %llu, process instructions %llu, GPU %.2f ms; %llu passes, %llu draws, %llu segments\n", index + rep, out, same ? "==" : "!=", live, w, h, pf, exec_ns / 1e6, setup_ns / 1e6, (unsigned long long)exec_in, (unsigned long long)proc_in, gpu,
                (unsigned long long)(pass1 - pass0), (unsigned long long)(draw1 - draw0), (unsigned long long)g_seg + 1);
     }
     if (same_all) printf("MATCH: the replayed frame equals the live frame\n");
