@@ -812,9 +812,9 @@ static void geo_draw_(NvProg *pr, const p_draw *dw0, const p_draw_idx *di0, uint
     int n = g_geo_nrun = geo_run_walk(re);
     if (n > 1) { g_geo_hoisted += n - 1; g_geo_hoist_runs++; }
     enc_r_end(re);
-    typeof(S) s0 = S; typeof(R) r0 = R; int pd = g_pso_dirty, dd = g_dss_dirty;
+    typeof(S) s0; typeof(R) r0; int pd = g_pso_dirty, dd = g_dss_dirty;
     fz_cursor cur = {.p = g_exec_next, .ret_n = g_ret_n};
-    if (n > 1) memcpy(cur.ret, g_ret, sizeof(*g_ret) * (size_t)g_ret_n);
+    if (n > 1) { s0 = S; r0 = R; memcpy(cur.ret, g_ret, sizeof(*g_ret) * (size_t)g_ret_n); }
     id<MTL4ComputeCommandEncoder> ce = nil;
     int packs = 0;
     for (int i = 0; i < n; i++) {
