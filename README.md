@@ -37,7 +37,7 @@ Each game's note says what its profile needs and why, what was found on it and w
 
 ## How to play
 
-You need a Mac with Apple silicon and macOS 26.6 or later, [Xcode](https://developer.apple.com/download/all/?q=Xcode%2027.2) 27.2 selected with `sudo xcode-select -s /Applications/Xcode.app`, [Homebrew](https://brew.sh) and an arm64 Python 3.12 or newer. These games reserve a 9 GB memory pool, so 16 GB is the practical minimum.
+You need a Mac with Apple silicon and macOS 26.6 or later, [Xcode](https://developer.apple.com/download/all/?q=Xcode%2027.2) 27.2 selected with `sudo xcode-select -s /Applications/Xcode.app` (with several Xcode versions installed, name this one `Xcode-27.2.app` and select it), [Homebrew](https://brew.sh) and an arm64 Python 3.12 or newer. These games reserve a 9 GB memory pool, so 16 GB is the practical minimum.
 
 **1. Install the tools** (only once), in Terminal:
 
