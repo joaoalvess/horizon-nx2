@@ -227,9 +227,12 @@ check_t_initial_uncached: RUN_ENV = MTL_DEBUG_LAYER=1
 t_first_sampled: t_first_sampled.m $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_first_sampled.m $(MTL_T_SRC) $(FW)
 check_t_first_sampled: RUN_ENV = MTL_DEBUG_LAYER=1
-t_stream: t_stream.m ../../host/stream_mac.m $(MTL_T_DEP)
+t_stream: t_stream.m ../../host/stream_mac.m ../../host/stream_proto.h $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_stream.m $(MTL_T_SRC) $(FW) -framework VideoToolbox -framework CoreMedia -framework CoreVideo
 check_t_stream: RUN_ENV = MTL_DEBUG_LAYER=1
+t_stream_sock: t_stream_sock.m ../../host/stream_mac.m ../../host/stream_proto.h $(MTL_T_DEP)
+	clang $(CFLAGS) -fobjc-arc -o $@ t_stream_sock.m $(MTL_T_SRC) $(FW) -framework VideoToolbox -framework CoreMedia -framework CoreVideo
+check_t_stream_sock: RUN_ENV = MTL_DEBUG_LAYER=1
 t_upload_slots: t_upload_slots.m $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_upload_slots.m $(MTL_T_SRC) $(FW)
 .PHONY: check_t_upload_slots

@@ -12434,41 +12434,55 @@ static void present_gpu_note(double s, int fx) {
     n[fx] = 0;
 }
 #if TARGET_OS_OSX
-int dm_stream_open(int *width, int *height); IOSurfaceRef dm_stream_surface(int i); int dm_stream_take(void); void dm_stream_put(int i, uint64_t ticket, uint64_t capture_ns, double pass_s, int drawn);
-static struct { id<MTLTexture> tex; id<MTL4CommandAllocator> al; id<MTL4CommandBuffer> cb; id<MTLBuffer> uv; } g_stream[8];
+int dm_stream_open(int width, int height); int dm_stream_take(IOSurfaceRef *surface, uint32_t *gen, int *width, int *height); void dm_stream_put(int i, uint32_t gen, uint64_t ticket, uint64_t capture_ns, double pass_s, int drawn);
+static struct { id<MTLTexture> tex; uint32_t gen; id<MTL4CommandAllocator> al; id<MTL4CommandBuffer> cb; id<MTLBuffer> uv; } g_stream[8];
 static int g_stream_on = -1;
-static int stream_setup(void) {
-    int w = 0, h = 0, n = dm_stream_open(&w, &h);
+static int stream_setup(id<MTLTexture> src, const int crop[4]) {
+    NSUInteger r[4]; int w = (int)src.width, h = (int)src.height;
+    if (present_crop_rect(src, crop, r)) { w = (int)r[2]; h = (int)r[3]; }
+    int n = dm_stream_open(w, h);
     if (n > 8) n = 8;
     for (int i = 0; i < n; i++) {
-        MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm width:w height:h mipmapped:NO];
-        td.storageMode = MTLStorageModeShared; td.usage = MTLTextureUsageRenderTarget;
-        g_stream[i].tex = [g_dev newTextureWithDescriptor:td iosurface:dm_stream_surface(i) plane:0];
         g_stream[i].al = [g_dev newCommandAllocator]; g_stream[i].cb = [g_dev newCommandBuffer];
         g_stream[i].uv = [g_dev newBufferWithLength:sizeof(float) * 8 options:MTLResourceStorageModeShared];
-        if (!g_stream[i].tex || !g_stream[i].al || !g_stream[i].cb || !g_stream[i].uv) { MLOG("[RED] stream: cannot create the frame textures over the encoder's IOSurfaces (%dx%d)", w, h); return 0; }
-        g_stream[i].tex.label = @"stream frame";
-        res_add(g_stream[i].tex); res_add(g_stream[i].uv);
+        if (!g_stream[i].al || !g_stream[i].cb || !g_stream[i].uv) { MLOG("[RED] stream: cannot create the capture pass's command buffers"); return 0; }
+        res_add(g_stream[i].uv);
     }
     if (n) res_commit();
     return n > 0;
 }
+static int stream_target(int i, IOSurfaceRef surface, uint32_t gen, int w, int h) {
+    if (g_stream[i].tex && g_stream[i].gen == gen) return 1;
+    MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm width:w height:h mipmapped:NO];
+    td.storageMode = MTLStorageModeShared; td.usage = MTLTextureUsageRenderTarget;
+    id<MTLTexture> t = [g_dev newTextureWithDescriptor:td iosurface:surface plane:0];
+    if (!t) { MLOG("[RED] stream: cannot create a frame texture over the encoder's IOSurface (%dx%d)", w, h); return 0; }
+    t.label = @"stream frame";
+    if (g_stream[i].tex) res_remove(g_stream[i].tex);
+    res_add(t); res_commit();
+    g_stream[i].tex = t; g_stream[i].gen = gen;
+    return 1;
+}
 static void stream_capture(id<MTLTexture> src, const int crop[4], uint64_t ticket) {
-    if (g_stream_on < 0) g_stream_on = stream_setup();
+    if (g_stream_on < 0) g_stream_on = stream_setup(src, crop);
     if (!g_stream_on) return;
-    int i = dm_stream_take();
+    IOSurfaceRef surface = NULL; uint32_t gen = 0; int w = 0, h = 0;
+    int i = dm_stream_take(&surface, &gen, &w, &h);
     if (i < 0) return;
     uint64_t t0 = now_ns();
+    int target = stream_target(i, surface, gen, w, h);
+    CFRelease(surface);
+    if (!target) { dm_stream_put(i, gen, ticket, t0, 0, 0); return; }
     id<MTL4CommandBuffer> cb = g_stream[i].cb;
     [g_stream[i].al reset];
     [cb beginCommandBufferWithAllocator:g_stream[i].al];
     int kind = present_encode_m4(cb, src, g_stream[i].tex, crop, g_stream[i].uv, NULL);
     [cb endCommandBuffer];
-    if (!kind) { dm_stream_put(i, ticket, t0, 0, 0); return; }
+    if (!kind) { dm_stream_put(i, gen, ticket, t0, 0, 0); return; }
     MTL4CommitOptions *o = [MTL4CommitOptions new];
     [o addFeedbackHandler:^(id<MTL4CommitFeedback> f) {
         if (f.error) MLOG("[RED] stream frame command buffer error: %s", f.error.description.UTF8String);
-        dm_stream_put(i, ticket, t0, f.GPUEndTime - f.GPUStartTime, !f.error);
+        dm_stream_put(i, gen, ticket, t0, f.GPUEndTime - f.GPUStartTime, !f.error);
     }];
     [g_q4 commit:&cb count:1 options:o];
 }

@@ -4,7 +4,7 @@ __attribute__((weak)) uint64_t g_t0_ns;   // process start time (host main.c), r
 __attribute__((weak)) _Atomic uint64_t dm_present_ns;   // when the last present was made, for DM_HITCH_DUMP (hle_thread.c)
 __attribute__((weak)) int dm_guest_as_contains(uintptr_t address) { (void)address; return 0; }   // no guest address space (hle_bigstack.c)
 __attribute__((weak)) void dm_vi_layer_crop(int c[4]) { c[0] = c[1] = c[2] = c[3] = 0; }   // no vi layer crop (hle_vi.c), read by hle_nvn's present
-__attribute__((weak)) int dm_stream_open(int *width, int *height) { (void)width; (void)height; return 0; }
-__attribute__((weak)) void *dm_stream_surface(int i) { (void)i; return 0; }
-__attribute__((weak)) int dm_stream_take(void) { return -1; }
-__attribute__((weak)) void dm_stream_put(int i, uint64_t ticket, uint64_t capture_ns, double pass_s, int drawn) { (void)i; (void)ticket; (void)capture_ns; (void)pass_s; (void)drawn; }
+__attribute__((weak)) int dm_stream_open(int width, int height) { (void)width; (void)height; return 0; }
+__attribute__((weak)) int dm_stream_take(void **surface, uint32_t *gen, int *width, int *height) { (void)surface; (void)gen; (void)width; (void)height; return -1; }
+__attribute__((weak)) void dm_stream_put(int i, uint32_t gen, uint64_t ticket, uint64_t capture_ns, double pass_s, int drawn) { (void)i; (void)gen; (void)ticket; (void)capture_ns; (void)pass_s; (void)drawn; }
+__attribute__((weak)) void dm_audio_stream(void (*sink)(uint64_t time_ns, const int16_t *pcm, int frames)) { (void)sink; }

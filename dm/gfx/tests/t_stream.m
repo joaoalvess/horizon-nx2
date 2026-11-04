@@ -85,7 +85,7 @@ int main(void) { @autoreleasepool {
     CHECK("no frame dropped or failed", !atomic_load(&g_st_drops) && !atomic_load(&g_st_encoder_drops) && !atomic_load(&g_st_failed));
     CHECK("the stream starts with a sync frame", g_st_win.sync >= 1);
     NSData *file = [NSData dataWithContentsOfFile:@(path)];
-    NSString *tsv = [NSString stringWithContentsOfFile:[@(path) stringByAppendingString:@".tsv"] encoding:NSUTF8StringEncoding error:nil];
+    NSString *tsv = [NSString stringWithContentsOfFile:[NSString stringWithFormat:@"%s.tsv", path] encoding:NSUTF8StringEncoding error:nil];
     NSArray<NSString *> *lines = [[tsv stringByTrimmingCharactersInSet:NSCharacterSet.newlineCharacterSet] componentsSeparatedByString:@"\n"];
     CHECK("the per-frame table has a line per frame", lines.count == 61);
     size_t sizes[60] = {0}, sum = 0; int sync0 = 0;
