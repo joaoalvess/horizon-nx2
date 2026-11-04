@@ -80,6 +80,13 @@
 
 ## Launcher metadata
 
+### No Game language row in an app packed from a dump
+
+- **Symptom:** the settings of a Mac app or IPA packed from a dump folder have no Game language row, while `DM_LANG` in the environment changes the language. Reported on [Donkey Kong Bananza](../../dm/games/040074A01BF12000/README.md) upstream ([NX2Apple#619](https://github.com/LNPANDY/NX2Apple/issues/619), [#659](https://github.com/LNPANDY/NX2Apple/issues/659)).
+- **Cause:** `settings.py` shows the row when the game's `control.nacp` lists more than one language. A dump has no control data, so the file the NSP script names (the packed version's, beside its RomFS, for the Mac app) and the one `build_ipa.sh` names (the same, else `$W/data/v0/control.nacp`) do not exist, `nacp.languages` returns an empty list and the row is left out.
+- **Fix:** with no list, `settings.py` offers every language with a note (`UNKNOWN_LANGUAGES`), as `game_language` and `DM_LANG` already accept any. A game that lacks the language picked may show another: upstream saw Hyrule Warriors: Age of Imprisonment show Russian and Portuguese as English. `dm/tools/tests/test_launcher_settings.py` covers the three cases (one language, a list, none).
+- **Found on:** code reading on the folders of [Pokémon Pokopia](../../dm/games/0400A3A01EE4C000/README.md), [Donkey Kong Bananza](../../dm/games/040074A01BF12000/README.md) and Mario Kart World, dumps with no `control.nacp`; from upstream nxnative `aafe01d3`. No app has been packed with the fix.
+
 ### A Mac front end's default settings change Metal execution paths
 
 - **Symptom:** starting a Mac app through a front end with unchanged settings enables the encode thread, and can disable Metal 4 pipelines and the pipeline archive; starting the same app from Finder keeps the host's defaults.
