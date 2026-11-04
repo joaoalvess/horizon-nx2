@@ -39,17 +39,25 @@ Every agent follows these rules. They come from the user, `CLAUDE.md` and incide
 
 ## Git
 
-- Work on branch `refactor`, created from `main`.
+- Work on branch `refactor`, created from `main`, or in a worktree branch joined into it (Worktrees, below).
 - Commits are local, in English, in the repository's conventional form: `perf(<scope>): <what>`, `refactor(<scope>): ...` (a move or a change of structure that keeps the command stream identical), `build(<scope>): ...`, `fix(<scope>): ...`, `test(<scope>): ...`, `docs(agents): ...` or `docs(reference): ...`, with a `Catalog: <ID>` trailer for a catalog item. No Co-Authored-By and no Claude attribution.
 - `git add` names each file.
 - Never commit `docs/env_switches.tsv`, `PERF_M4.md`, `POKOPIA.md` or `STREAMING.md` (the user's uncommitted work).
 - A file in `agents/refactor/` is committed together with the item whose state it records, or at a milestone.
 - An item that fails before its commit is dropped this way, the only checkout allowed: `git diff -- <its files> > /Volumes/Hangar/Games/overnight/patches/<ID>.patch`, then `git checkout -- <its files>`. A committed item that fails later leaves through `git revert`, except in stage M: the moves depend on each other, so a fault found after a move commit is fixed forward by a new commit (the user, 2026-11-04 15:05).
 - Never:
-  - push;
+  - push, unless the user asks;
   - `git reset --hard`, `git clean -f`, or force anything;
-  - create worktrees;
   - rewrite commits on `main`.
+
+## Worktrees
+
+From 2026-11-04 16:30 (the user): parallel workstreams run in Herdr worktrees, joined back into `refactor`.
+- Create: `herdr worktree create --cwd /Users/joaoalves/Developer/switch --branch rf-<stream> --base refactor --path /Users/joaoalves/Developer/switch/.claude/worktrees/rf-<stream> --no-focus`. Branch names start with `rf-` (a branch cannot be named `refactor/...` while `refactor` exists).
+- One implementer per worktree. It edits only its worktree, builds, tests and boots there, each command in its own Herdr tab of the worktree's workspace (`herdr tab create --workspace <id> --cwd <worktree> --label <what> --no-focus`, `herdr pane run`, `herdr pane wait-output`); git, `rg` and file reads stay in its shell. It leaves its change uncommitted.
+- The reviewer reads the worktree's `git diff`. The main thread commits in the worktree on its branch (`git -C <worktree> commit`), then joins: `git -C <worktree> rebase refactor`, the item's build and tests again if `refactor` moved, then `git merge --ff-only rf-<stream>` in the main checkout. State files (`plan.md`, `catalog.md`, the night file) are written only in the main checkout, after the join.
+- Heavy jobs share one Mac: a host build, a full test suite, a replay run and a boot each run under `guard.py` (builds, suites and replays with `--game gfx`), so `state/boot.lock` lets one run at a time.
+- After its join, the worktree is removed (`herdr worktree remove --workspace <id>`, its tabs closed first) and its branch deleted.
 
 ## Machine
 
@@ -61,7 +69,7 @@ Every agent follows these rules. They come from the user, `CLAUDE.md` and incide
 
 ## Subagents
 
-- One agent edits source files at a time, except two implementers the user put in parallel on disjoint files (from 2026-11-04 11:45: S3a in `dm/gfx`, HT in `dm/host/hle_thread.c`). Each one then builds its candidate binaries from a plain export of HEAD plus its own patch (`git archive HEAD | tar -x -C /Volumes/Hangar/Games/overnight/src-<item>`, then `git apply` its patch there), never from the shared tree, so the other's unfinished change stays out of its checks. Reviewers and searchers are read-only and may run in parallel.
+- One implementer per worktree (Worktrees, above); in the main checkout only the main thread edits. Reviewers and searchers are read-only and may run in parallel.
 - A subagent writes only its own report under `reports/` (and `captures.md` for the capture subagent). Status files have one writer, the main thread.
 - A reviewer gets the diff and the code, never the implementer's reasoning.
 - The night file is the plan the user asked to run on 2026-11-04, and the local commits on `refactor` it lists are requested. Nobody asks the user anything during an unattended run. A decision that belongs to the user goes under Open in the night file, and work moves on.

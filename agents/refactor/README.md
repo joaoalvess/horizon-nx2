@@ -20,4 +20,4 @@ To brief a subagent, name its role file, the catalog item, what it may touch and
 
 > Read `agents/refactor/roles/reviewer.md`. Review item C3; the diff is uncommitted in the checkout. Write your report to `agents/refactor/reports/20261105-0130-C3-review.md` and reply with its verdict line.
 
-Only one agent edits source files at a time, since there is one checkout and no worktrees. Read-only agents run in parallel.
+Since 2026-11-04 16:30 (the user) parallel work runs in Herdr worktrees, one branch and one implementer each, joined into `refactor` by the main thread (`rules.md`, Worktrees; the live list is in `plan.md`, Worktrees). In the main checkout only the main thread edits. Read-only agents run in parallel.

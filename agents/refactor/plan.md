@@ -181,7 +181,7 @@ Check tiers in M (D10):
 | SK | Command sink | The translator writes through the sink; Metal, recorder and test sinks. Before the recorder tap goes, the tap's digest equals the test sink's on every capture. The test sink checked against the Metal sink on the corpus; the direct path (Pokopia, MKW) gets digests from here on; the stream-oracle tests move from the recorder digest to the test sink. Digest identical. Recorder costs weigh more than on the Mac: iOS runs the recorder for every game. | pending |
 | S4 | Data model | Written first: S5's threading design (where translation runs, what it reads). Then compiled-program metadata, a registry view for wherever S5 translates (it cannot be a read-only copy, because `tex_by_id` writes view caches into `g_treg`), hot objects as C structs. Digest identical; corpus green. Replay CPU reported against SK. | pending |
 | S5 | Asynchronous submission | The game thread only enqueues; translation and encoding run on their own threads. The test-first list is below the table. A replay through the real submit entry; its digest equal between asynchronous and synchronous submission; a stress replay that rewrites guest memory after each submit returns; a TSan run of the host tests. Corpus green, boots clean, DK's `pcore` reported against S4. | pending |
-| HT | Host threads (parallel track) | H2, H3 and H5 of the catalog, then `SetThreadActivity`'s use after free (`hle_thread.c`, the file HT owns). `make -C dm/host/tests GAME=<id> run preempt` pass; boots clean. | H2 committed `f243f605`; H3 committed `32913850`; H5 committed `6c3a5cb3`; `SetThreadActivity` pending |
+| HT | Host threads (parallel track) | H2, H3 and H5 of the catalog, then `SetThreadActivity`'s use after free (`hle_thread.c`, the file HT owns). `make -C dm/host/tests GAME=<id> run preempt` pass; boots clean. | H2 committed `f243f605`; H3 committed `32913850`; H5 committed `fe61f907`; `SetThreadActivity` pending |
 | X | The rest of the repository | After the graphics core: a survey of the other large files (`hle_cheats.c` 2,103 lines, `hle_gl.m` 2,069, `hle_vk.m` 1,554, `front_mac.m` 1,407, `hle_thread.c` 1,295) and of the host's open bugs, then a plan of its own. | pending |
 
 Upstream ideas, not ported (D7): each becomes a catalog item only on its merit, measured on the user's games:
@@ -199,6 +199,17 @@ S5 tests, written before its code:
 - objects finalized while a queued submission still uses them: `serial_del` at `g_fence + 1`, `vpool_drop` unmapping;
 - the present invariant that a submission publishes its records before it returns (`nvn_rec.h` 227-229, `nvn_mtl.m` ~12867);
 - capture inside the submit.
+
+## Worktrees
+
+Parallel workstreams (the user, 2026-11-04 16:30), each in `.claude/worktrees/<branch>` on a branch from `refactor`, joined by rebase and fast-forward (`rules.md`, Worktrees). A row leaves this table when its worktree is removed.
+
+| Branch | Stream | Scope | State |
+|---|---|---|---|
+| `rf-m0-build` | M0 part 5 and D5 | `dm/host/Makefile` one object per file with dependency files under `gen/<id>/obj/`, `DM_HOST_REV` through a generated header; `dm/ios/tools/gen_build.py`, `compile_check.py` adapted; iOS Release `-O2` + ThinLTO; unsigned Release link | started 17:25 |
+| `rf-m0-link` | M0 parts 1-4, 8 and the deterministic count | replayer and tests link module objects; `nvn_mtl_all.inc` and `MTL_MODS`; runtime switches for the tap and inline dispatch; one `mtl_submit`; the files keyed to `nvn_mtl.m`; the dependency check; the count mode and its start baseline; `commands.md` lines (given to the main thread) | started 17:25 |
+| `rf-m0-tools` | M0 parts 6 (less the count) and 7 | the move tool, the move check, the call check; the module map regenerated and its pipeline under `dm/tools` | started 17:25 |
+| `rf-ht-sta` | HT, `SetThreadActivity` | the use after free of the pause loop's `t->pt` read, with its test and `docs/reference` entry | started 17:25 |
 
 ## Root causes
 

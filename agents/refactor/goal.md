@@ -11,14 +11,14 @@ Trabalho do refactor em ~/Developer/switch, sem o usuário, até as 13:00 de 202
 - medição antes de cada resumo.
 Fora do escopo: capturas do MKW. Antes do setup, confira em pmset -g batt que o Mac está na tomada.
 
-Como trabalhar: você orquestra e mantém só o estado e as conclusões. Briefe cada subagente apontando o arquivo do papel em agents/refactor/roles/ e o item; não redigite o papel. Cada item passa por um implementador (um por vez: mesma árvore, sem worktree) e por um revisor independente, que não vê o raciocínio do implementador. Só depois você comita, junto com a linha State do catalog.md. Use subagentes de busca para chamadores, causas de falha e frames. Antes de cada resumo, um subagente revisa o diff inteiro <BASE>..refactor. Cada arquivo tem um único escritor (agents/refactor/README.md); subagentes escrevem só o próprio relatório em agents/refactor/reports/.
+Como trabalhar: você orquestra e mantém só o estado e as conclusões. Briefe cada subagente apontando o arquivo do papel em agents/refactor/roles/ e o item; não redigite o papel. Cada item passa por um implementador (um por worktree Herdr, rules.md, Worktrees) e por um revisor independente, que não vê o raciocínio do implementador. Só depois você comita, junto com a linha State do catalog.md. Use subagentes de busca para chamadores, causas de falha e frames. Antes de cada resumo, um subagente revisa o diff inteiro <BASE>..refactor. Cada arquivo tem um único escritor (agents/refactor/README.md); subagentes escrevem só o próprio relatório em agents/refactor/reports/.
 
 Regras (detalhe em rules.md):
 - Boot só pelo guard.py, um por vez, em background (run_in_background), nunca matando o guard. Abaixo de 30% de memória livre, espere.
 - STOP_<jogo> ou STOP_ALL param os boots daquele jogo ou de todos.
 - Nunca use os saves reais (run/save do usuário, saves/esposa): sempre uma cópia nova.
 - Commits locais em inglês, sem push, sem Co-Authored-By nem atribuição, só os arquivos do item. Nunca comite docs/env_switches.tsv, PERF_M4.md, POKOPIA.md nem STREAMING.md.
-- Nunca: push, assinatura, eas, deploy, reboot, reset, clean, force, worktree. Item que falha antes do commit sai como rules.md manda (patch salvo, depois git checkout dos arquivos dele); depois do commit, com git revert.
+- Nunca: push (só quando o usuário pedir), assinatura, eas, deploy, reboot, reset, clean, force. Item que falha antes do commit sai como rules.md manda (patch salvo, depois git checkout dos arquivos dele); depois do commit, com git revert.
 - Ache a causa raiz antes de mudar código. Diff mínimo e sem comentários.
 - Não pergunte nada ao usuário: o que for decisão dele vai para Open no arquivo da noite, e você segue.
 - Não termine um turno sem chamar ferramenta enquanto houver trabalho. Esperando algo em background, faça trabalho offline.

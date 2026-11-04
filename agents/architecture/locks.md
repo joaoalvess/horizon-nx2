@@ -230,7 +230,7 @@ The nesting graph the analysis found (226 ordered pairs over 80 locks, call-grap
 | `g_post_mu` | `post_complete` (`:1592-1598`), released in `post_run` (`:1583`) | the post-ops of a fence, including mirror readbacks (`mirror_rb_land`, `:1578`) | yes |
 | movie `dmu` | `md_pump` (`hle_movie.c:459`) | decoding and the guest event signals; taken with `dm_host_lock` for that reason (`hle_thread.c:206-209`; `docs/reference/threads.md`, "A host lock held across a same-core handoff") | yes |
 | a video decoder's `mu`, `g_spt_mu`, `g_mq_lock` | `cv_dec_reset` (`hle_codec_video.c:284`), `spt_fire` (`:79`), `mq_ev_sync` (`hle_oe.c:32`) | `hle_signal_system_event`, which takes `G` and can wake guest threads | yes |
-| `G` | `thr_free` (`hle_thread.c:376`) | a `sched_yield` spin until every queued signal to the freed thread has gone out (`cv_pend` 0); it ends because no `cv_flush` needs `G` | yes (H3 review) |
+| `G` | `thr_free` (since H3) | a `sched_yield` spin until every queued signal to the freed thread has gone out (`cv_pend` 0); it ends because no `cv_flush` needs `G` | yes (H3 review) |
 | `routeLock` | `dm_haptics_apple_controller` (`haptics_apple.m:376-380`) | `dispatch_sync` on the rumble queue | yes |
 | `g_path_lock`, `g_lock` (fs) | `h_fs_Commit` (`hle_fs.c:686-689`) | the save commit: `clonefile`, `renamex_np`, `rm_tree` (`hle_fs.c:674-676`) | yes |
 
