@@ -12,14 +12,12 @@ Three pieces in this repository do it:
 - **HorizonHub** (`apps/HorizonHub`, `apps/Sources/HubKit`): the Mac app that holds the profiles and the game catalog, starts and stops dmhost under the guard's protection, and does all the networking: Bonjour, pairing, encryption, UDP with forward error correction.
 - **HorizonTV** (`apps/HorizonTV`): the tvOS app. HorizonHub and HorizonTV share the protocol package `HorizonLink` and the player `HorizonPlayer`. Their layout, build and first start are in [apps/README.md](apps/README.md); the hub ⇄ TV protocol is [apps/LINK.md](apps/LINK.md).
 
-The hub and the tvOS app were first written in another of the user's repositories (HangarVault, stages J1–J5 of its plan) and moved here on 2026-11-04 (stage M), renamed and translated to English. Mentions of HangarVault below, from before the move, mean the hub.
-
 ## Status
 
 | # | Stage | Done when | Status |
 |---|---|---|---|
 | S1 | Encoder in dmhost writing a file | See "S1" below | done (2026-11-03): all three games write a file that decodes, Donkey Kong Bananza's plays in QuickTime (checked by the user); the encoder's own time p95 6.5-7.6 ms; the capture pass costs about 0.15 ms of GPU per frame; frame time p50 unchanged on the three games' A/B, p95 unchanged on Donkey Kong Bananza and Mario Kart World, Pokopia's 1.7 ms higher inside the spread of its base runs ("Found in S1" under S1); closed with the user on the 150 s runs, without the 20 min ones |
-| S2 | Local socket to HangarVault, with a probe tool for the hub's end | See "S2" below | done (2026-11-03): the probe received all three games' streams, socket hop p95 0.045-0.064 ms, every recorded `.h264` decodes whole with no frame-number gap, the stereo audio covers every attached stretch; frame time unchanged (Pokopia against a base run of the same day, the other two against S1); DETACH with pause, ATTACH again and a hub that dies mid-run checked on the games ("Found in S2" under S2); commits 805fb333 (audio) and 8ba7e691 (socket, probe) |
+| S2 | Local socket to the hub, with a probe tool for the hub's end | See "S2" below | done (2026-11-03): the probe received all three games' streams, socket hop p95 0.045-0.064 ms, every recorded `.h264` decodes whole with no frame-number gap, the stereo audio covers every attached stretch; frame time unchanged (Pokopia against a base run of the same day, the other two against S1); DETACH with pause, ATTACH again and a hub that dies mid-run checked on the games ("Found in S2" under S2); commits 805fb333 (audio) and 8ba7e691 (socket, probe) |
 | S3a | Pacing without the Mac display, focus arbitration between the window and the TV | See "S3" below | code done (2026-11-03): steps 1 and 3 in, unit tests pass, independent review taken; step 2 dropped with the user; commits 7538b30c (oe), 83e38af7 (stream), a5c2ea8f (window script); the boots of step 4 wait for the test round ("Test list") |
 | S3b | Network controller, pause on detach | See "S3" below | code done (2026-11-04): steps 1-4 in, unit tests pass, independent review taken ("S3b plan" under S3); commits ca9248bf (hid), 7f8f3587 (oe), bdfdb569 (stream), 17d47eb3 (probe); the boots wait for the test round ("Test list") |
 | J1 | Games on the Mac: catalog, profiles, opening and closing a game under the guard | Choosing a profile and a game opens it with that profile's save and nick (`fs mount save` in the profile's folder); a second game is refused; a GPU error closes the game, writes the block and shows it in the menu; Close ends with `graceful exit done` | code done in the earlier repository; the real-game checks wait for the hub and TV test round |
@@ -29,7 +27,7 @@ The hub and the tvOS app were first written in another of the user's repositorie
 | J5 | Polish: bit rate and resolution on screen, messages, docs | Set on reaching it | code done: resolution, rate, codec and button layout in the TV app, on-screen statistics, hub notices on the TV |
 | M | The hub and the tvOS app in this repository as HorizonHub and HorizonTV (`apps/`) | See [apps/README.md](apps/README.md#status) | done on branch `monorepo` (2026-11-04): 153 tests pass, both apps build, `horizon-fakestream` through `stream_probe` with no decode error and no gap; install and first run wait for the hub and TV test round |
 
-Order across both plans: J1 and S1 in parallel, then S2 → J2 → S3a → J3 → S3b → J4 → J5. The local socket protocol is written below before J2 starts.
+Order: J1 and S1 in parallel, then S2 → J2 → S3a → J3 → S3b → J4 → J5. The local socket protocol is written below before J2 starts.
 
 Next step: the test round with the user, item by item, from "Test list" below (decided with the user, 2026-11-03). Waiting on the user's call about resuming a paused game from the Mac window.
 
@@ -56,7 +54,7 @@ Next step: the test round with the user, item by item, from "Test list" below (d
 
 ## Test list
 
-One round with the user at the end, one item at a time (decided with the user, 2026-11-03). Every boot is 150 s, muted, through the guard, from a fresh copy of the agent's save, with the probe as the hub, one at a time; before the first boot HangarVault's session is asked to stop its builds and encodes, and told when the round ends. The hosts are one build for all items, `hosts/s3/dmhost` (`runs/hosts/s3` for Pokopia and Donkey Kong Bananza, `run2/hosts/s3` for Mario Kart World), built at 1994f5d6 (2026-11-04); rebuilt if more code lands before the round. Scripts: `/Volumes/Hangar/Games/overnight/stream/s3a_run.sh <game> <mode> s3` and `s3b_run.sh <game> <mode> s3`, read with `s3a_check.sh` / `s3b_check.sh <game> <mode> s3`.
+One round with the user at the end, one item at a time (decided with the user, 2026-11-03). Every boot is 150 s, muted, through the guard, from a fresh copy of the agent's save, with the probe as the hub, one at a time; before the first boot the hub's agent session is asked to stop its builds and encodes, and told when the round ends. The hosts are one build for all items, `hosts/s3/dmhost` (`runs/hosts/s3` for Pokopia and Donkey Kong Bananza, `run2/hosts/s3` for Mario Kart World), built at 1994f5d6 (2026-11-04); rebuilt if more code lands before the round. Scripts: `/Volumes/Hangar/Games/overnight/stream/s3a_run.sh <game> <mode> s3` and `s3b_run.sh <game> <mode> s3`, read with `s3a_check.sh` / `s3b_check.sh <game> <mode> s3`.
 
 | # | Item | Command | Passes when | Result |
 |---|---|---|---|---|
@@ -112,7 +110,7 @@ At the end, quit and open the app without `--env` to go back to the real catalog
 
 | # | Step | Expected | Result |
 |---|---|---|---|
-| 3.1 | [agent] Copy `apps/` to `pro:scratch/horizon-bench/` (without `.build`), then `swift build -c release --product horizon-receiver` there | builds | |
+| 3.1 | [agent] Copy `apps/` to a folder on the Pro (without `.build`), then `swift build -c release --product horizon-receiver` there | builds | |
 | 3.2 | [user] HorizonHub › TV › Pair a TV…; [agent] `horizon-receiver --seconds 120` on the Pro (it finds the Mac over Bonjour; its identity and known Macs are in `~/Library/Application Support/HorizonReceiver/`) | the terminal shows the code to type on the Mac | |
 | 3.3 | [user] Type the code on the Mac and confirm | the Pro appears among the paired TVs; the receiver gets video | |
 | 3.4 | [agent] Three runs of `horizon-receiver --headless --seconds 300 --tsv ~/hr/wifi-N.tsv` | each final summary has present to decoded p95 under 25 ms; an undecoded frame counts as over | |
@@ -186,12 +184,12 @@ Known limits: a client that loses its decoder references (tvOS invalidates the s
 
 ### S2: local socket
 
-- **Who connects:** `DM_STREAM=<unix socket path>`. HangarVault creates the socket and starts dmhost with its path; dmhost connects to it, and connects again after the hub restarts. A dmhost without a hub just does not stream.
+- **Who connects:** `DM_STREAM=<unix socket path>`. The hub creates the socket and starts dmhost with its path; dmhost connects to it, and connects again after the hub restarts. A dmhost without a hub just does not stream.
 - **Framing:** typed, length-prefixed messages.
   - Out: video access units with the present's host time and their reference and LTR info; audio PCM blocks (48 kHz, s16, stereo) with their time.
   - In: controller states, LTR acknowledgements and refresh requests, pause and resume, bitrate.
 - **Audio tap:** the host's PCM, taken in `dm/host/hle_audio.c` before the AudioUnit or the silent sink.
-- **Probe:** a Mac tool under `dm/tools/` that plays HangarVault's end of the socket. It writes the stream to a file and prints the socket hop latency.
+- **Probe:** a Mac tool under `dm/tools/` that plays the hub's end of the socket. It writes the stream to a file and prints the socket hop latency.
 - **Backpressure:**
   - A Unix stream socket buffers 8 KB by default on the Air (`net.local.stream.sendspace` 8192), so a single keyframe already pushes back.
   - Raise `SO_SNDBUF`, and write from a thread of its own with a bounded queue.
@@ -214,19 +212,19 @@ Known limits: a client that loses its decoder references (tvOS invalidates the s
   - The encoder's own p95 stays 6.0-6.6 ms with the socket; no frame dropped from the socket queue or by the encoder on any run.
   - Pokopia's base run on 2026-11-03 evening is steadier than S1's base runs of the same day: p95 17.3 ms against 26.9 and 28.4, no dropped frame against 402 and 627, GPU p50 13.8 ms against 12.4. The cause is not known (open); S2 compares Pokopia with a base run made right after its stream runs.
   - With DETACH the Mac's sound comes back at once, and with ATTACH it goes to the stream again: the probe's `.wav` of the DETACH / ATTACH run is 77 s, the attached stretches. When the hub dies, dmhost logs the closed socket as a detach with pause, tries once a second (`ECONNREFUSED` while the dead hub's socket file stays), and the next hub gets HELLO and a key frame after its ATTACH.
-  - The first `VTDecompressionSessionCreate` in a process blocks about 45 ms; later ones take 0.5-1 ms. The probe makes a warm-up session at start; the hub should do the same before its first ATTACH (told to HangarVault for J2).
+  - The first `VTDecompressionSessionCreate` in a process blocks about 45 ms; later ones take 0.5-1 ms. The probe makes a warm-up session at start; the hub should do the same before its first ATTACH (noted for the hub's J2).
   - The probe skips a script action that needs dmhost's HELLO when it fires before HELLO arrives, and any `attach` in a script turns its own attach off: a script starting with `0:attach` waits for the next `attach`. Start scripts at 1 s.
 - **Open, from the S2 code review (2026-11-03):**
   - ~~An encoder session VideoToolbox invalidates is not recreated.~~ Fixed (2026-11-04, commit 63bf1c44): the encoder queue makes it again with the last size, codec and bitrate; `t_stream_sock` checks it.
   - ~~A hub that stops reading but keeps its socket open is never noticed.~~ Fixed (2026-11-04, commit 2b2e4942): a 5 s send deadline (`SO_SNDTIMEO`) closes the socket, which counts as a detach with pause while a client is attached; a hub stalled that long shows the TV nothing anyway.
-  - ~~The hub is not told when ATTACH fails or when its size is replaced.~~ Fixed (2026-11-04, commits 64c81d27 and 1994f5d6): `ATTACH_RESULT`, type 7, agreed with HangarVault.
+  - ~~The hub is not told when ATTACH fails or when its size is replaced.~~ Fixed (2026-11-04, commits 64c81d27 and 1994f5d6): `ATTACH_RESULT`, type 7, agreed with the hub.
 
-#### Protocol v1 (reviewed by HangarVault, 2026-11-03)
+#### Protocol v1 (reviewed by the hub, 2026-11-03)
 
-The hub and dmhost run on the same Mac. HangarVault reviewed the draft on 2026-11-03; its changes are in: reconnection, a client-chosen codec, controllers connecting and their style, a DETACH that hands the game back to the Mac without pausing, a size limit and skipping unknown types.
+The hub and dmhost run on the same Mac. The hub's side reviewed the draft on 2026-11-03; its changes are in: reconnection, a client-chosen codec, controllers connecting and their style, a DETACH that hands the game back to the Mac without pausing, a size limit and skipping unknown types.
 
-- **Socket:** `AF_UNIX`, `SOCK_STREAM`. The hub creates it (`~/Library/Application Support/HangarVault/games/stream.sock`, 74 bytes; at most 103, the `sun_path` limit, which the hub checks before it starts a game), listens and starts dmhost with `DM_STREAM=<path>`.
-  - While it is not connected, dmhost tries to connect once a second. No socket (`ENOENT`) or no listener (`ECONNREFUSED`) is normal: HangarVault's J1 passes `DM_STREAM` before it listens. dmhost logs a plain line when the state changes, not a `[RED]` one.
+- **Socket:** `AF_UNIX`, `SOCK_STREAM`. The hub creates it (`~/Library/Application Support/HorizonHub/games/stream.sock`, 73 bytes; at most 103, the `sun_path` limit, which the hub checks before it starts a game), listens and starts dmhost with `DM_STREAM=<path>`.
+  - While it is not connected, dmhost tries to connect once a second. No socket (`ENOENT`) or no listener (`ECONNREFUSED`) is normal: the hub passes `DM_STREAM` before it listens. dmhost logs a plain line when the state changes, not a `[RED]` one.
   - After each connection dmhost sends `HELLO` again and starts detached. A hub that restarts recreates the socket at the same path (unlink, bind).
   - The hub identifies the dmhost on the other end with `LOCAL_PEERPID`, so `HELLO` carries no pid.
 - **Clock:** every time is host nanoseconds from `mach_absolute_time` scaled by its timebase (`now_ns` in `dm/host/hle_os.c`). It is one clock for every process on the Mac, so the hub reads the socket hop as its own `now` minus `sent_ns`.
@@ -250,7 +248,7 @@ The hub and dmhost run on the same Mac. HangarVault reviewed the draft on 2026-1
   | 4 | `AUDIO` | u64 host time of the block's first sample; u32 frame count; then that many frames of interleaved s16 stereo at 48 kHz. Blocks of 240 frames (5 ms). |
   | 5 | `STATS` | once a second: the encoder's last window (encode p50 and p95, frames dropped because the queue was full, bitrate) as UTF-8 `key=value` pairs, for the hub's overlay and logs. |
   | 6 | `RUMBLE` | reserved for the game's vibration; v1 hosts do not send it. |
-  | 7 | `ATTACH_RESULT` | after every `ATTACH`, the one that resumes a paused game included, ahead of the new session's first frame: u8 ok (1 the encoder started; 0 it did not and no client is attached); u8 pad; u16 width, u16 height in use; u16 pad; u32 codec in use; then a reason in UTF-8 to the end of the payload, when ok is 0 or the size asked for was changed (out of 64 to 4096, or odd). Also sent with ok 0 when an encoder session VideoToolbox invalidated cannot be made again. Agreed with HangarVault on 2026-11-04; a hub that does not know it skips it, so the version stays 1. |
+  | 7 | `ATTACH_RESULT` | after every `ATTACH`, the one that resumes a paused game included, ahead of the new session's first frame: u8 ok (1 the encoder started; 0 it did not and no client is attached); u8 pad; u16 width, u16 height in use; u16 pad; u32 codec in use; then a reason in UTF-8 to the end of the payload, when ok is 0 or the size asked for was changed (out of 64 to 4096, or odd). Also sent with ok 0 when an encoder session VideoToolbox invalidated cannot be made again. Agreed with the hub on 2026-11-04; a hub that does not know it skips it, so the version stays 1. |
 
 - **Hub to dmhost:**
 
