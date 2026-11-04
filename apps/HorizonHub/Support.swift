@@ -1,7 +1,7 @@
 import Foundation
 
 enum Background {
-    static let queue = DispatchQueue(label: "dev.joaoalvess.horizon.hub.work", qos: .userInitiated, attributes: .concurrent)
+    static let queue = DispatchQueue(label: "dev.joaoalvess.horizon.work", qos: .userInitiated, attributes: .concurrent)
 
     static func run<T: Sendable>(_ work: @escaping @Sendable () throws -> T) async throws -> T {
         try await withCheckedThrowingContinuation { continuation in

@@ -155,7 +155,7 @@ func runGuard(state: String, game: String, lockWait: Int, log: String) async thr
 }
 
 func makeShortDirectory() throws -> String {
-    var template = Array("/tmp/hv.XXXXXX".utf8CString)
+    var template = Array("/tmp/hub.XXXXXX".utf8CString)
     guard let made = template.withUnsafeMutableBufferPointer({ mkdtemp($0.baseAddress) }) else { throw Timeout() }
     return String(cString: made)
 }
