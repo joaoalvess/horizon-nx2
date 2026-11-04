@@ -9851,7 +9851,7 @@ static void fb_prepare(NvProg *pr) {
     if (R.rt.depth && (fs->rf.bindless || fs->rf.dyn)) g_fb_dread = 1;
     for (int i = 0; i < fs->rf.nb && g_fb_n < 4; i++) { const nvn_rbind *b = &fs->rf.b[i]; if (b->kind != NVN_RB_TEX || b->reg >= NTEX) continue;
         int tid = (int)(tex_slot_h(S.tex[1], S.img[1], b->reg) & 0xfffff); if (!tid) continue;
-        os_unfair_lock_lock(&g_rmu); uint64_t ser = tid < g_ntreg && g_treg[tid].ok ? g_treg[tid].t.serial : 0; os_unfair_lock_unlock(&g_rmu);
+        uint64_t ser = h_ser((uint64_t)tid);
         if (!ser) continue;
         if (R.rt.depth && R.rt.depth->serial == ser) g_fb_dread = 1;
         for (int k = 0; k < R.rt.n && k < 8 && g_fb_n < 4; k++) { if (!R.rt.color[k] || R.rt.color[k]->serial != ser) continue;
