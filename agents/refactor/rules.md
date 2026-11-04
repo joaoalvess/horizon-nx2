@@ -40,12 +40,11 @@ Every agent follows these rules. They come from the user, `CLAUDE.md` and incide
 ## Git
 
 - Work on branch `refactor`, created from `main`.
-- Exception, stage U only (the user, 2026-11-04 15:05, plan D7): the main thread checks out `main` in this tree, cherry-picks upstream commits onto it (`CLAUDE.md`, "Branches"), commits the profile and build changes they need, merges `main` into `refactor` and checks `refactor` out again. Before it, no implementer has uncommitted changes in the tree. From U to the end of M, `nvn_mtl.m` is not changed on `main`.
 - Commits are local, in English, in the repository's conventional form: `perf(<scope>): <what>`, `refactor(<scope>): ...` (a move or a change of structure that keeps the command stream identical), `build(<scope>): ...`, `fix(<scope>): ...`, `test(<scope>): ...`, `docs(agents): ...` or `docs(reference): ...`, with a `Catalog: <ID>` trailer for a catalog item. No Co-Authored-By and no Claude attribution.
 - `git add` names each file.
 - Never commit `docs/env_switches.tsv`, `PERF_M4.md`, `POKOPIA.md` or `STREAMING.md` (the user's uncommitted work).
 - A file in `agents/refactor/` is committed together with the item whose state it records, or at a milestone.
-- An item that fails before its commit is dropped this way, the only checkout allowed besides U's: `git diff -- <its files> > /Volumes/Hangar/Games/overnight/patches/<ID>.patch`, then `git checkout -- <its files>`. A committed item that fails later leaves through `git revert`, except in stage M: the moves depend on each other, so a fault found after a move commit is fixed forward by a new commit (the user, 2026-11-04 15:05).
+- An item that fails before its commit is dropped this way, the only checkout allowed: `git diff -- <its files> > /Volumes/Hangar/Games/overnight/patches/<ID>.patch`, then `git checkout -- <its files>`. A committed item that fails later leaves through `git revert`, except in stage M: the moves depend on each other, so a fault found after a move commit is fixed forward by a new commit (the user, 2026-11-04 15:05).
 - Never:
   - push;
   - `git reset --hard`, `git clean -f`, or force anything;
