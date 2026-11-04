@@ -16,7 +16,7 @@ Other files of this folder: [overview.md](overview.md) (the thread inventory), [
 | `g_keythr` | TSD key: pthread → `thr_t` | `:101`; created at `:513` |
 | `g_next_id` | Next thread ID, from 0x51 | `:102` |
 | `g_all` | All threads, linked through `all` | `:93` |
-| `g_wait` | All waiting threads, linked through `next` | `:103` |
+| `g_wait_key[256]`, `g_wait_sync` | Waiting threads since refactor item H2: lock, condition and address waiters in buckets hashed by kind and key (`wait_head`), sync-object waiters (kind 4, matched through their handle arrays) on their own list; each chain doubly linked through `next` / `pprev`, so a waiter unlinks in constant time; every scan still filters by kind and key | `hle_thread.c` (`wait_head`, `wait_link`, `wait_unlink`) |
 | `g_wseq` | Wait registration counter | `:223` |
 | `g_se[512]`, `g_se_lock` | System event bindings | `:38-41` |
 | `g_core_preempt` | `DM_PREEMPT` or the profile's `DM_GAME_CORE_PREEMPT` | `:96`; set at `:515` |
@@ -44,7 +44,7 @@ Result codes: `R_TIMEOUT` 0xEA01, `R_CANCELLED` 0xEC01, `R_BAD_HANDLE` 0xE401, `
 | `host_work` | Points at the thread's `dm_host_work` | `:65` |
 | `native_wait` | Depth of native HLE waits | `:66` |
 | `host_owned` | Made by `dm_guest_thread_spawn` | `:67` |
-| `wseq`, `next`, `all` | Wait order, wait chain, all-threads chain | `:68-70` |
+| `wseq`, `next`, `pprev`, `all` | Wait order, wait chain (with its back-link, H2), all-threads chain | `:68-70` |
 | `closed` | Handle closed; freed when also exited | `:72` |
 | `nsvc`, `nyield`, `nbackoff`, `nspin`, run fields | Counters and yield-run, spin-run and poll-run state | `:73-78` |
 | `mport` | Mach port, for CPU time | `:79` |
@@ -103,7 +103,7 @@ A guest thread exits with `pthread_exit` from inside the SVC (`:362`), so all of
 All under `G`.
 
 1. `block(t, kind, ns)` (`:250-270`):
-   1. Sets `wkind`, clears `woke`, pushes `t` on `g_wait`, `wseq = ++g_wseq` (`:251`).
+   1. Sets `wkind`, clears `woke`, links `t` into its kind and key's bucket (`wait_link`; kind 4 into `g_wait_sync`), `wseq = ++g_wseq` (`:251`).
    2. `ns == 0`: unlinks and returns `R_TIMEOUT` (`:252`).
    3. `hand_leave(t)` (`:253`).
    4. Deadline: on the guest clock under the deterministic clock (`:255-256`); otherwise an absolute `CLOCK_REALTIME` time (`:257-258`).
@@ -122,7 +122,7 @@ Every row takes `G` unless noted.
 | 0x1A ArbitrateLock | `:1023-1036` | If the lock word still equals owner \| `WAITERS_BIT`: record `waddr` / `wtag`, optionally lend QoS to the owner (`:1030-1033`), `block` kind 1 with no timeout. Otherwise return 0 at once |
 | 0x1B ArbitrateUnlock | `:1037` | `lock_handoff` (`:279-285`): no waiter → word = 0; otherwise word = the picked waiter's tag, plus `WAITERS_BIT` if more wait, and `wake` it |
 | 0x1C WaitProcessWideKeyAtomic | `:1038-1063` | Key = 1 first (`:1051`), then record `wkey` / `waddr` / `wtag`, `lock_handoff(addr)`, `block` kind 2 with `poll_wait_begin(timeout)`. A timeout does not retake the lock |
-| 0x1D SignalProcessWideKey | `:1064-1072` | Up to `count` (≤ 0 all) kind-2 waiters in kernel order go through `lock_acquire_for` (`:287-295`): a free lock is taken by CAS and the waiter woken; a held one gets `WAITERS_BIT` and the waiter becomes a kind-1 wait with a new `wseq`. Key = 0 when no kind-2 waiter is left |
+| 0x1D SignalProcessWideKey | `:1064-1072` | Up to `count` (≤ 0 all) kind-2 waiters in kernel order go through `lock_acquire_for` (`:287-295`): a free lock is taken by CAS and the waiter woken; a held one gets `WAITERS_BIT` and the waiter becomes a kind-1 wait with a new `wseq`, unlinked and linked into the lock's bucket (H2). Key = 0 when no kind-2 waiter is left |
 | 0x34 WaitForAddress | `:1074-1086` | Type 0: wait if less than; 1: decrement if less than, then wait; 2: wait if equal; 3: wait if the 64-bit value is equal (`:1079-1080`). A failed test returns `R_BAD_STATE`; otherwise `block` kind 3 |
 | 0x35 SignalToAddress | `:1087-1107` | Counts kind-3 waiters. Type 1: increment if equal. Type 2: modify by waiter count; count ≤ 0 with waiters gives value − 2 (`:1097`). A failed CAS returns `R_BAD_STATE`; otherwise wake up to `count` in kernel order |
 | 0x45 CreateEvent | `:1109-1113` | `event_t` with `refs` = 2; write and read handles |

@@ -66,7 +66,7 @@ typedef struct thr {
     int native_wait;          // nesting depth of a blocking native HLE wait (G held)
     int host_owned;            // a guest thread the host created itself (dm_guest_thread_spawn): it waits in host code and is not one of the game's threads
     uint64_t wseq;             // Sequence number of wait registration: at equal priority first come, first woken (same order as the Horizon kernel's KThread wait tree)
-    struct thr *next;          // Wait chain
+    struct thr *next, **pprev; // Wait chain
     struct thr *all;           // All-threads chain (for the state dump)
     int last_svc; uint64_t last_lr;
     int closed;                // Handle closed: the object is freed only when this holds together with exited (Horizon: the thread object goes away with the last reference)
@@ -100,7 +100,8 @@ static pthread_mutex_t G = PTHREAD_MUTEX_INITIALIZER;
 static struct { int type; void *obj; } g_h[MAX_H];
 static pthread_key_t g_keythr;
 static uint64_t g_next_id = 0x51;
-static thr_t *g_wait;          // All waiting threads (lock / condition / address / synchronization)
+#define WAIT_BUCKET_BITS 8
+static thr_t *g_wait_key[1 << WAIT_BUCKET_BITS], *g_wait_sync;
 
 static uint32_t h_new(int type, void *obj) {     // Caller holds G
     for (int i = 1; i < MAX_H; i++) if (!g_h[i].type) { g_h[i].type = type; g_h[i].obj = obj; return 0x1000 + i; }
@@ -215,15 +216,24 @@ void dm_host_lock(pthread_mutex_t *m) {
 }
 
 // ---------- Wait primitives (called holding G) ----------
+static thr_t **wait_head(int kind, uint64_t key) {
+    if (kind == 4) return &g_wait_sync;
+    return &g_wait_key[((key ^ (uint64_t)kind) * 0x9E3779B97F4A7C15ull) >> (64 - WAIT_BUCKET_BITS)];
+}
+static void wait_link(thr_t *t) {
+    thr_t **h = wait_head(t->wkind, t->wkind == 2 ? t->wkey : t->waddr);
+    if ((t->next = *h)) t->next->pprev = &t->next;
+    *h = t; t->pprev = h;
+}
 static void wait_unlink(thr_t *t) {
-    for (thr_t **p = &g_wait; *p; p = &(*p)->next) if (*p == t) { *p = t->next; break; }
-    t->next = NULL;
+    if (t->pprev) { *t->pprev = t->next; if (t->next) t->next->pprev = t->pprev; }
+    t->next = NULL; t->pprev = NULL;
 }
 // Pick a waiter in kernel order: numerically lower priority first, at equal priority the earlier registered first (holding G). kind 1 matches by lock address, 2 by condition key, 3 by address
 static uint64_t g_wseq;
 static thr_t *pick(int kind, uint64_t a) {
     thr_t *b = NULL;
-    for (thr_t *t = g_wait; t; t = t->next) {
+    for (thr_t *t = *wait_head(kind, a); t; t = t->next) {
         if (t->wkind != kind || (kind == 2 ? t->wkey : t->waddr) != a) continue;
         if (!b || t->prio < b->prio || (t->prio == b->prio && t->wseq < b->wseq)) b = t;
     }
@@ -248,7 +258,7 @@ static void wake(thr_t *t, int64_t res) {
 }
 // Suspend until woken or timed out (ns<0 infinite, 0 immediate timeout); returns wres or R_TIMEOUT
 static int64_t block(thr_t *t, int kind, int64_t ns) {
-    t->wkind = kind; t->woke = 0; t->next = g_wait; g_wait = t; t->wseq = ++g_wseq;
+    t->wkind = kind; t->woke = 0; wait_link(t); t->wseq = ++g_wseq;
     if (ns == 0) { wait_unlink(t); t->wkind = 0; return R_TIMEOUT; }
     hand_leave(t);
     struct timespec dl;
@@ -279,7 +289,7 @@ static inline int cas32(uint64_t a, uint32_t *exp, uint32_t v) { return __atomic
 static void lock_handoff(uint64_t addr) {
     thr_t *w = pick(1, addr); int more = 0;
     if (!w) { st32(addr, 0); return; }
-    for (thr_t *t = g_wait; t; t = t->next) if (t != w && t->wkind == 1 && t->waddr == addr) { more = 1; break; }
+    for (thr_t *t = *wait_head(1, addr); t; t = t->next) if (t != w && t->wkind == 1 && t->waddr == addr) { more = 1; break; }
     st32(addr, w->wtag | (more ? WAITERS_BIT : 0));
     wake(w, 0);
 }
@@ -290,8 +300,10 @@ static void lock_acquire_for(thr_t *t, uint64_t addr, uint32_t tag) {
         if (v == 0) { if (cas32(addr, &v, tag)) { wake(t, 0); return; } continue; }
         if (cas32(addr, &v, v | WAITERS_BIT)) break;
     }
-    t->wkind = 1; t->waddr = addr; t->wtag = tag;      // Still in g_wait, changed to a lock wait
+    wait_unlink(t);
+    t->wkind = 1; t->waddr = addr; t->wtag = tag;      // Changed to a lock wait, in the lock's bucket
     t->wseq = ++g_wseq;                                  // The kernel inserts it anew into the lock owner's wait queue: at equal priority it goes after the existing lock waiters
+    wait_link(t);
 }
 
 // ---------- Threads ----------
@@ -561,7 +573,7 @@ static int sig_obj(uint32_t h, int *bad) {    // 1 = signaled (holding G)
 // A synchronization object became signaled (an event, or a thread that exited): wake the WaitSynchronization waiters whose handle set holds it, so they re-check (holding G).
 // It used to wake every such waiter on every signal; each then re-checked its handles and went back to sleep, a wake-up per waiting thread per signal
 static void wake_sync_waiters(const void *obj) {
-    for (thr_t *w = g_wait; w; ) { thr_t *n = w->next;
+    for (thr_t *w = g_wait_sync; w; ) { thr_t *n = w->next;
         if (w->wkind == 4) { int hit = !w->whs;
             for (int i = 0; i < w->whn && !hit; i++) { unsigned k = w->whs[i] - 0x1000; hit = k > 0 && k < MAX_H && g_h[k].obj == obj; }
             if (hit) wake(w, -1); }
@@ -572,7 +584,7 @@ static int64_t now_mono_ns(void) { struct timespec ts; clock_gettime(CLOCK_MONOT
 void dm_guest_clock_advanced(void) {
     if (!dm_detclock_enabled()) return;
     pthread_mutex_lock(&G);
-    for (thr_t *t = g_wait; t; t = t->next) if (t->wkind) pthread_cond_signal(&t->cv);
+    for (thr_t *t = g_all; t; t = t->all) if (t->wkind) pthread_cond_signal(&t->cv);
     pthread_mutex_unlock(&G);
 }
 
@@ -1065,7 +1077,7 @@ static int svc_thread_impl(int num, uint64_t *regs) {
         uint64_t key = regs[0]; int cnt = (int)regs[1], n = 0;
         pthread_mutex_lock(&G);
         for (thr_t *w; (cnt <= 0 || n < cnt) && (w = pick(2, key)); n++) lock_acquire_for(w, w->waddr, w->wtag);   // In kernel order; once turned into a lock wait or woken it is no longer kind 2
-        int left = 0; for (thr_t *w = g_wait; w; w = w->next) if (w->wkind == 2 && w->wkey == key) { left = 1; break; }
+        int left = 0; for (thr_t *w = *wait_head(2, key); w; w = w->next) if (w->wkind == 2 && w->wkey == key) { left = 1; break; }
         if (!left) st32(key, 0);
         pthread_mutex_unlock(&G);
         regs[0] = 0; return 1;
@@ -1087,7 +1099,7 @@ static int svc_thread_impl(int num, uint64_t *regs) {
     case 0x35: {  // SignalToAddress(x0 address, w1 type, w2 value, w3 count): 0 wake, 1 increment if equal and wake, 2 if equal modify the value by waiter count and wake
         uint64_t addr = regs[0]; int type = (int)regs[1]; int32_t val = (int32_t)regs[2]; int cnt = (int)regs[3];
         pthread_mutex_lock(&G);
-        int nw = 0; for (thr_t *w = g_wait; w; w = w->next) if (w->wkind == 3 && w->waddr == addr) nw++;
+        int nw = 0; for (thr_t *w = *wait_head(3, addr); w; w = w->next) if (w->wkind == 3 && w->waddr == addr) nw++;
         int64_t r = 0;
         if (type != 0) {
             int32_t nv = val + 1;

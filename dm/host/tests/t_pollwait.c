@@ -70,7 +70,8 @@ static void *signaller(void *unused) {
     (void)unused;
     pthread_mutex_lock(&G);
     while (!waiter_ready) pthread_cond_wait(&ready_cv, &G);
-    assert(g_wait && g_wait->wkind == 2 && g_wait->wkey == (uint64_t)&condition_key);
+    thr_t *w = *wait_head(2, (uint64_t)&condition_key);
+    assert(w && w->wkind == 2 && w->wkey == (uint64_t)&condition_key);
     pthread_mutex_unlock(&G);
     uint64_t r[32] = {(uint64_t)&condition_key, 1}; svc_thread(0x1D, r);
     return NULL;

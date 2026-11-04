@@ -229,6 +229,12 @@ preempt: $(B)/t_preempt
 	$(B)/t_preempt
 	$(B)/t_preempt --all-peers
 run: $(B)/t_preempt
+$(B)/t_waitq: t_waitq.c t_condvar_stub.c ../hle_thread.c ../dm.h $(GAME_H) | $(B)
+	$(CLANG) -O2 -flto=thin -g -Wall -Werror -Wno-unused-function -I.. $(GINC) -o $@ t_waitq.c t_condvar_stub.c
+.PHONY: waitq
+waitq: $(B)/t_waitq
+	$(B)/t_waitq
+run: waitq
 # the Vorbis tests build their own packets and need no game profile (they build without GAME)
 $(B)/t_vorbis: t_vorbis.c ../../third_party/stb_vorbis/stb_vorbis.c | $(B)
 	$(CLANG) -O2 -flto=thin -g -Wno-unused-function -Wno-tautological-compare -o $@ t_vorbis.c
