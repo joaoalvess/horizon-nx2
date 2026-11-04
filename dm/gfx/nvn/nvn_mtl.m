@@ -138,7 +138,7 @@ static int g_allocprof = -1; static uint64_t g_ap_bytes[64], g_ap_fn[8];
 typedef struct { uint64_t wall, cpu; } cp_stamp;
 static _Thread_local uint64_t g_cp_wall[8], g_cp_cpu[8], g_cp_calls[8], g_cp_last;
 static _Thread_local uint64_t g_cp_geo_waited, g_cp_geo_safe;
-static int cp_on(void) { static _Thread_local int on = -1; if (on < 0) { const char *e = getenv("DM_NVN_CPUPROF"); on = e && atoi(e); } return on; }
+static int cp_on(void) { static _Atomic int on = -1; int v = atomic_load_explicit(&on, memory_order_relaxed); if (v < 0) { const char *e = getenv("DM_NVN_CPUPROF"); v = e && atoi(e); atomic_store_explicit(&on, v, memory_order_relaxed); } return v; }
 static cp_stamp cp_begin(void) {
     if (!cp_on()) return (cp_stamp){0};
     return (cp_stamp){clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW), clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID)};
