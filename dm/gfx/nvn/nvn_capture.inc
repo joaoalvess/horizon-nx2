@@ -216,7 +216,7 @@ static int cap_pf_bpp(MTLPixelFormat f, int plane) {   // bytes per pixel of a p
     if (f >= MTLPixelFormatRGBA32Uint && f <= MTLPixelFormatRGBA32Float) return 16;
     return 0;
 }
-// bytes per block of a plane and the block's size in texels (1x1 for plain texels; BC formats 4x4); 0 = a format the capture cannot read back
+// bytes per block of a plane and the block's size in texels (1x1 for plain texels; BC formats 4x4; other compressed formats (ASTC) the block of the NVN format the layer makes them from); 0 = a format the capture cannot read back
 static int cap_pf_block(MTLPixelFormat f, int plane, uint32_t *bw, uint32_t *bh) {
     *bw = *bh = 1;
     int b = cap_pf_bpp(f, plane); if (b || plane) return b;
@@ -224,6 +224,8 @@ static int cap_pf_block(MTLPixelFormat f, int plane, uint32_t *bw, uint32_t *bh)
     if (f == MTLPixelFormatBC1_RGBA || f == MTLPixelFormatBC1_RGBA_sRGB || f == MTLPixelFormatBC4_RUnorm || f == MTLPixelFormatBC4_RSnorm) return 8;
     if ((f >= MTLPixelFormatBC2_RGBA && f <= MTLPixelFormatBC3_RGBA_sRGB) || f == MTLPixelFormatBC5_RGUnorm || f == MTLPixelFormatBC5_RGSnorm
         || (f >= MTLPixelFormatBC6H_RGBFloat && f <= MTLPixelFormatBC7_RGBAUnorm_sRGB)) return 16;
+    for (int nf = 1; nf <= NVN_FORMAT_BGRA8_SRGB; nf++) { uint32_t m; int w, h;
+        if (fmt_compressed(nf) && nvn_fmt_to_mtl(nf, &m, NULL) && m == (uint32_t)f) { b = nvn_fmt_bpb(nf, &w, &h); *bw = (uint32_t)w; *bh = (uint32_t)h; return b; } }
     *bw = *bh = 1; return 0;
 }
 static int cap_tex_planes(MTLPixelFormat f) { return f == MTLPixelFormatDepth32Float_Stencil8 ? 2 : 1; }

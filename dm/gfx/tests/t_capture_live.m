@@ -45,13 +45,19 @@ int main(int argc, char **argv) { @autoreleasepool {
     tex_t rt = {.magic = MAGIC('T', 'E', 'X', 0), .serial = nvn_new_serial()};
     rt.d = (nvn_texdesc){.target = NVN_TEXTURE_TARGET_2D, .format = NVN_FORMAT_RGBA8, .width = 64, .height = 64, .depth = 1, .levels = 1, .samples = 1, .flags = NVN_TEXTURE_FLAGS_COMPRESSIBLE};
     nvn_tex_layout(&rt.d, &rt.L); mtl_tex_init(&rt);
+    tex_t at = {.magic = MAGIC('T', 'E', 'X', 0), .serial = nvn_new_serial()};
+    at.d = (nvn_texdesc){.target = NVN_TEXTURE_TARGET_2D, .format = NVN_FORMAT_RGBA_ASTC_8x8_SRGB, .width = 16, .height = 16, .depth = 1, .levels = 3, .samples = 1};
+    nvn_tex_layout(&at.d, &at.L); mtl_tex_init(&at);
     chain sub = {{0}, 0}; p_clear_buf *cb = emit(&sub, OP_CLEAR_BUF, sizeof *cb); *cb = (p_clear_buf){(uint64_t)(uintptr_t)pool + 0x30000, 0x400, 0x11223344, 0}; emit(&sub, OP_END, 0);
     // frame 1: the target cleared red, with a gradient block copied in (the content frame 2 starts from)
     for (int i = 0; i < 16 * 16; i++) { pool[4 * i] = (uint8_t)i; pool[4 * i + 1] = (uint8_t)(255 - i); pool[4 * i + 2] = 7; pool[4 * i + 3] = 255; }
+    for (int i = 0; i < 64; i++) pool[0x34000 + i] = (uint8_t)(0x81 + 3 * i);
     chain f1 = {{0}, 0};
     { p_set_rt *r = emit(&f1, OP_SET_RT, sizeof *r); r->n = 1; r->color[0] = &rt; }
     { p_clear_color *c = emit(&f1, OP_CLEAR_COLOR, sizeof *c); *c = (p_clear_color){0, 0xf, {1, 0, 0, 1}}; }
-    copy_block(&f1, &rt, (uint64_t)(uintptr_t)pool, 8, 8); emit(&f1, OP_END, 0);
+    copy_block(&f1, &rt, (uint64_t)(uintptr_t)pool, 8, 8);
+    { p_copy_b2t *o = emit(&f1, OP_COPY_B2T, sizeof *o); o->src = (uint64_t)(uintptr_t)pool + 0x34000; o->tex = &at; o->r = (NVNcopyRegion){0, 0, 0, 16, 16, 1}; }
+    emit(&f1, OP_END, 0);
     submit(f1.p); nvn_cap_present(&rt, NULL);
     // a texture on a pool of its own, registered, then the pool finalized as nvnMemoryPoolFinalize does and the pool object's memory reused: the ID stays registered with its
     // storage gone, and the capture must not read the dead pool object (Pokemon Scarlet: a texture's bytes there read as a sparse pool's mode, or as addresses outside every pool)
@@ -72,6 +78,8 @@ int main(int argc, char **argv) { @autoreleasepool {
     { p_set_rt *r = emit(&a, OP_SET_RT, sizeof *r); r->n = 1; r->color[0] = &rt; }
     copy_block(&a, &rt, (uint64_t)(uintptr_t)pool + 0x10000, 32, 8);
     { uint64_t *c = emit(&a, OP_CALL, 8); *c = (uint64_t)(uintptr_t)sub.p; }
+    { p_copy_b2t *o = emit(&a, OP_COPY_T2B, sizeof *o); o->src = (uint64_t)(uintptr_t)pool + 0x38000; o->tex = &at; o->r = (NVNcopyRegion){0, 0, 0, 16, 16, 1}; }
+    { p_copy_b2t *o = emit(&a, OP_COPY_B2T, sizeof *o); o->src = (uint64_t)(uintptr_t)pool + 0x38000; o->tex = &rt; o->r = (NVNcopyRegion){48, 48, 0, 4, 4, 1}; }
     emit(&a, OP_END, 0);
     submit(a.p);
     for (int i = 0; i < 16 * 16; i++) { pool[0x20000 + 4 * i] = (uint8_t)(i * 5); pool[0x20000 + 4 * i + 1] = 40; pool[0x20000 + 4 * i + 2] = (uint8_t)(255 - i); pool[0x20000 + 4 * i + 3] = 255; }
@@ -80,6 +88,13 @@ int main(int argc, char **argv) { @autoreleasepool {
     nvn_cap_present(&rt, NULL);
     if (!g_cap_done || g_cap_failed) { fprintf(stderr, "FAIL: capture %s\n", g_cap_done ? "incomplete" : "not written"); return 1; }
     if (g_cap_unmapped) { fprintf(stderr, "FAIL: %llu addresses outside every pool (the finalized pool's object read)\n", (unsigned long long)g_cap_unmapped); return 1; }
+    { int bad = 0;
+      for (int nf = 1; nf <= NVN_FORMAT_BGRA8_SRGB; nf++) { uint32_t mpf = 0, bw, bh; int w, h, want = nvn_fmt_bpb(nf, &w, &h);
+          if (!nvn_fmt_to_mtl(nf, &mpf, NULL) || !mpf) continue;
+          int got = cap_pf_block((MTLPixelFormat)mpf, 0, &bw, &bh);
+          if (!got || (!fmt_depth(nf) && (got != want || bw != (uint32_t)w || bh != (uint32_t)h))) { fprintf(stderr, "FAIL: NVN format %#x (Metal %u): the capture reads %d bytes per %ux%u block, NVN stores %d per %dx%d\n", nf, mpf, got, bw, bh, want, w, h); bad++; } }
+      if (bad) return 1; }
+    if (g_cap_tex_skip) { fprintf(stderr, "FAIL: %llu textures the frame reaches left out of the capture (content not captured)\n", (unsigned long long)g_cap_tex_skip); return 1; }
     if (*(uint32_t *)(pool + 0x30000) != 0x11223344) { fprintf(stderr, "FAIL: the called segment's buffer fill did not run\n"); return 1; }
     // a shader's interface hash is of its binding values, not of nvn_refl.h's struct bytes: pinned, so a field widened or added there (682fdd26: nvn_rbind.n, soff) does not
     // change it, which made the replayer refuse every capture although no binding had changed
