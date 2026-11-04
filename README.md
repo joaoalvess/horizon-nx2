@@ -1,81 +1,55 @@
-# nxnative
+# horizon-nx2
 
-Play your own Nintendo Switch games natively on iPhone and iPad. Bring your game (its NSP files) and your `prod.keys`; one script turns them into an IPA that you sideload.
+Mario Kart World, Donkey Kong Bananza and Pokémon Pokopia running natively on Apple silicon. A personal fork of [nxnative](https://github.com/seedds/nxnative), tuned for the Switch 2 games I play on a fanless MacBook Air M4.
 
-It is not an emulator: the game's own code runs directly on the Apple chip, with Switch graphics rebuilt on Metal. Nothing from any game is in this repository, and the project is not affiliated with Nintendo or any game publisher.
+<table>
+<tr>
+<td align="center" valign="top" width="33%"><img src="docs/images/mario-kart-world.jpg" width="256" alt="Mario Kart World"><br><small><b>Mario Kart World</b></small></td>
+<td align="center" valign="top" width="33%"><img src="docs/images/donkey-kong-bananza.jpg" width="256" alt="Donkey Kong Bananza"><br><small><b><a href="dm/games/040074A01BF12000/README.md">Donkey Kong Bananza</a></b></small></td>
+<td align="center" valign="top" width="33%"><img src="docs/images/pokemon-pokopia.jpg" width="256" alt="Pokémon Pokopia"><br><small><b><a href="dm/games/0400A3A01EE4C000/README.md">Pokémon Pokopia</a></b></small></td>
+</tr>
+</table>
 
-Switch 2 games have started too: [Donkey Kong Bananza](dm/games/040074A01BF12000/README.md) plays on the Mac, packed from a dump of the game; iPhone and iPad are untested.
+It is not an emulator. The game's own code runs directly on the Apple chip, a host program answers for the Switch's operating system, and the Switch's graphics are rebuilt on Metal. Nothing from any game is in this repository: you bring a dump of your own game. The project is not affiliated with Nintendo or any game publisher.
 
-## Acknowledgements
+## How it works
 
-This project is built on other people's work ([licenses](dm/third_party/README.md)):
+The Switch 2 and the Mac use processors of the same family, 64-bit ARM, so the game's machine code needs no translation. What the Mac lacks is the rest of the console: its operating system, Horizon, and its NVIDIA GPU. The project stands in for those.
 
-- **[d2r-mobile](https://github.com/jhaizhou-ops/d2r-mobile)** (MIT) developed this native-execution approach, for Diablo II: Resurrected. nxnative started as a copy of its generic parts: the NSO rewriter, the host that stands in for Horizon, the NVN-on-Metal layer and the iOS app shell. Fixes go both ways.
-- **Ryujinx** (MIT): its shader translator (`Ryujinx.Graphics.Shader`, `Ryujinx.Common` and `Spv.Generator` 1.3.2, in `dm/third_party/ryujinx` with a few fixes listed in [its README](dm/third_party/ryujinx/README.md)) turns the games' shaders into SPIR-V. Its emulation of the kernel and system services is also a reference when the host's behaviour is in doubt.
-- **[Atmosphère](https://github.com/Atmosphere-NX/Atmosphere)**: its kernel, mesosphère, is the reference for Horizon's synchronization semantics (address arbiter, condition variables).
-- **[LibHac](https://github.com/Thealexbarney/LibHac)**: reads NSPs and layers updates over the base game in `dm/tools/nx_extract`.
-- **[SPIRV-Cross](https://github.com/KhronosGroup/SPIRV-Cross)**: SPIR-V to Metal Shading Language.
-- **[glslang](https://github.com/KhronosGroup/glslang)** compiles the GLSL of OpenGL games to SPIR-V for it.
-- **[MacNativeGames](https://github.com/ly05010419/MacNativeGames)** (MIT): the GPU widening of 8-bit indices and in-pass clears in `dm/gfx/nvn/nvn_mtl.m`, and the visibility-counter lowering in the shader translator.
+- **CPU: native.** The game's modules (`main`, `sdk`, …) are loaded into a Mac process and run as they are. They are rewritten only where the Mac needs something different: calls into the console's kernel (`svc`), reads of its timer and thread registers, and a few stack, lock and spin-loop patterns ([`dm/tools/patch_nso.py`](dm/tools/patch_nso.py)).
+- **System: reimplemented.** Every request the game makes to Horizon and to the SDK's services (threads, memory, files, saves, controllers, audio, time) is answered by the host, [`dm/host`](dm/host).
+- **Graphics: translated.** The games draw through NVN, NVIDIA's graphics API for the Switch. The host records those commands and replays them as Metal 4 on the Mac's GPU ([`dm/gfx/nvn`](dm/gfx/nvn)). Games that use Vulkan or OpenGL go through layers of their own on Metal ([`dm/gfx/vk`](dm/gfx/vk), [`dm/gfx/gl`](dm/gfx/gl)).
+- **Shaders: translated ahead of time.** These games ship their GPU programs compiled for NVIDIA's Ampere architecture. They are translated once, before playing: Ryujinx's shader translator, extended to decode Ampere, turns them into SPIR-V, SPIRV-Cross into Metal Shading Language, and Apple's compiler into Metal libraries. At run time the host only looks each one up.
+
+Rosetta does the opposite: it translates the processor. Here the processor is the one part that runs untouched. The internals are in [docs/development.md](docs/development.md#how-it-works) and the [agent guides](docs/agents/README.md).
+
+## Games
+
+Tested on a MacBook Air M4 with 16 GB unless noted.
+
+| Game | Version | What plays | Open |
+|---|---|---|---|
+| Mario Kart World | 1.8.0 (v917504) | Grand Prix races at 57–60 fps, with sound | A race holds 9 to 11 GB and long sessions grow from there, which is tight on a 16 GB Mac. The profile is still provisional and not in this repository |
+| [Donkey Kong Bananza](dm/games/040074A01BF12000/README.md) | v458752 | The opening, the mining tunnel and the areas after it at 60 fps (measured on an M4 Pro). In busy scenes the game itself drops to 30 fps for a few seconds | Nothing past the first level's opening areas is tested |
+| [Pokémon Pokopia](dm/games/0400A3A01EE4C000/README.md) | 2.0.1 (v655360) | The opening, the character choice and the first area at about 60 fps, including a 31-minute playtest with no GPU error and no crash | Only the first area has been played. A save written by the game has not been checked |
+
+Each game's note says what its profile needs and why, what was found on it and what is open.
 
 ## How to play
 
-Switch 2 games are built from a folder of their files, not from NSPs, and are tested on the Mac only: see [Switch 2 games](#switch-2-games).
-
-### With a Mac app
-
-Community projects build on nxnative with Mac apps that turn your games into apps for your iPhone, iPad or Mac, with no command line, and keep them in a library. They are separate projects: questions and bugs about them go to their own pages.
-
-- [NX2Apple](https://github.com/LNPANDY/NX2Apple)
-- [NX Play](https://github.com/varyform/nx-native-wrapper)
-- [NxNative Launcher](https://github.com/rennan101/nxnative_Launcher)
-- [LumaNX](https://github.com/Xc1Ym/LumaNX)
-
-### Build from the command line
-
-You need a Mac with macOS 26.6 or later, [Xcode](https://developer.apple.com/download/all/?q=Xcode%2027.2) 27.2, [Homebrew](https://brew.sh) and Python 3.12 or newer (an arm64 one, not an Intel Homebrew's). An iPhone build also needs Xcode's iOS platform (Xcode → Settings → Components).
-
-The shaders are built with Xcode 27.2's Metal compiler. Select it before step 1: `sudo xcode-select -s /Applications/Xcode.app`. With several Xcode versions installed, name this one `Xcode-27.2.app` and select it with `sudo xcode-select -s /Applications/Xcode-27.2.app`.
+You need a Mac with Apple silicon and macOS 26.6 or later, [Xcode](https://developer.apple.com/download/all/?q=Xcode%2027.2) 27.2 selected with `sudo xcode-select -s /Applications/Xcode.app`, [Homebrew](https://brew.sh) and an arm64 Python 3.12 or newer. These games reserve a 9 GB memory pool, so 16 GB is the practical minimum.
 
 **1. Install the tools** (only once), in Terminal:
 
 ```
 xcodebuild -downloadComponent MetalToolchain
-git clone https://github.com/seedds/nxnative.git && cd nxnative
+git clone https://github.com/joaoalvess/horizon-nx2.git && cd horizon-nx2
 brew install xcodegen zstd glslang
 brew install --cask dotnet-sdk
 python3 -m pip install lz4 "capstone>=5,<6" fonttools nsz zbic "backports.zstd; python_version < '3.14'"
 ```
 
-**2. Put your game in a folder**: the game, plus its update and DLC if you have them (`.nsp`, `.xci`, `.nsz` or `.xcz`):
-
-```
-~/Games/MarioWonder/
-  Super Mario Bros. Wonder [010015100B514000][v0].nsp
-  Super Mario Bros. Wonder [010015100B514800][v327680].nsp
-```
-
-**3. Build**, with your game folder and your `prod.keys`:
-
-```
-python3 scripts/build_ipa_from_nsp.py ~/Games/MarioWonder -k ~/keys/prod.keys
-```
-
-The IPA appears in the game's folder. The first build takes 30–60 minutes and needs free disk space of about twice the game's size plus 10 GB; building again is much faster.
-
-To play on the Mac instead, add `--platform mac-app`: you get a Mac app of the game to open from Finder. All options: [The packing script in detail](docs/development.md#the-packing-script-in-detail).
-
-### Install
-
-Install the IPA on your iPhone or iPad with a sideloading tool such as AltStore, Sideloadly or LiveContainer. If your tool offers **Increased Memory Limit**, turn it on: the bigger games need it.
-
-Game too big to install? Build again with `--romfs separate`, and run the command the script prints once to copy the game files to your phone ([Quick reinstalls](docs/development.md#quick-reinstalls)).
-
-Controls, saves and settings: [Playing](docs/playing.md).
-
-### Switch 2 games
-
-A Switch 2 game is built from a folder of its files, not from NSPs, and needs no `prod.keys`. The script expects this folder (`updates` and `dlc` are optional):
+**2. Put the game's files in a folder.** A Switch 2 game is built from a folder of its files, not from NSPs, and needs no `prod.keys` (`updates` and `dlc` are optional):
 
 ```
 ~/Games/DonkeyKongBananza/
@@ -86,19 +60,50 @@ A Switch 2 game is built from a folder of its files, not from NSPs, and needs no
   dlc/040074a01bf13001/0/romfs/   the DLC's title ID
 ```
 
+**3. Build:**
+
 ```
 python3 scripts/build_ipa_from_nsp.py ~/Games/DonkeyKongBananza --platform mac-app
 ```
 
-You get a Mac app, with no icon because the folder holds none. iPhone and iPad are untested.
+You get a Mac app of the game in its folder, with no icon because a dump holds none. The first build translates the game's shaders and can take hours: about 75 minutes for Donkey Kong Bananza's full set, while Pokopia's full set of 131,426 is estimated at 11 hours. Later builds reuse them. Controls and settings: [Playing on the Mac](docs/playing.md#on-the-mac). Every option of the script: [The packing script in detail](docs/development.md#the-packing-script-in-detail).
 
-## Games
+Leaving out `--platform mac-app` packs an IPA for iPhone and iPad, but none of these three games has been tested there. Switch 1 games packed from NSPs follow [nxnative's instructions](https://github.com/seedds/nxnative#how-to-play).
 
-Games tested on Mac or iPhone. See the [per-game notes](dm/games/README.md#games) for tested platforms, progress and known issues:
+## Streaming to the Apple TV
 
-Needs iOS / iPadOS 26 or later on an iPhone 15 Pro or newer (A17 Pro chip or later) or an iPad with an M1 chip or later: the games' textures are BC-compressed, and older iPhones can't read that format. Other games aren't supported yet. For them the script writes a survey and still tries its best to pack an IPA, guessing the game's settings; such an IPA may not start.
+In progress. With `DM_STREAM=<socket path>` the Mac host becomes a stream source for a receiver on the same Mac ([`dm/host/stream_mac.m`](dm/host/stream_mac.m)):
 
-Under a game, "60 fps with 1.2.0" means it runs at 60 fps (30 on the Switch) with that update.
+- each presented frame is encoded with VideoToolbox's low-latency H.264 or HEVC encoder, in about 7 ms at 1080p on the Air;
+- the game's audio outputs are mixed into one stereo stream, and the Mac plays none while a client is attached;
+- the receiver sends controller input back, per player (buttons, sticks and motion), and can pause the game when the TV disconnects;
+- with a client attached, the host paces the game at 60 Hz on its own clock, so play does not depend on the Mac's window being visible or its display being awake.
+
+The encoder and the socket are measured on all three games. The controls, the pause and the pacing without the display are in the code and wait for their test round. The receiver, which carries the stream over the network to a tvOS player, is a separate piece still in progress; [`dm/tools/stream_probe`](dm/tools/stream_probe) stands in for it in tests. The protocol, the measurements and the stages are in [STREAMING.md](STREAMING.md).
+
+## Relationship to nxnative
+
+[nxnative](https://github.com/seedds/nxnative) runs more than a hundred Switch games on iPhone, iPad and Mac ([below](#games-nxnative-plays)). This fork narrows the target to the games above on a 16 GB MacBook Air with no fan, where heat, power and memory decide what plays, and adds what that needs: performance and memory work in the NVN-on-Metal layer and the host, and the streaming source. Upstream is merged by hand: only the changes that reach these games (the host, the graphics layers, the shader chain and the SDK services they call) are cherry-picked, and each game is booted again before they land.
+
+## Acknowledgements
+
+This project is built on other people's work ([licenses](dm/third_party/README.md)):
+
+- **[nxnative](https://github.com/seedds/nxnative)** (MIT), by seedds: the project this fork is built on and follows.
+- **[d2r-mobile](https://github.com/jhaizhou-ops/d2r-mobile)** (MIT) developed this native-execution approach, for Diablo II: Resurrected. nxnative started as a copy of its generic parts: the NSO rewriter, the host that stands in for Horizon, the NVN-on-Metal layer and the iOS app shell. Fixes go both ways.
+- **Ryujinx** (MIT): its shader translator (`Ryujinx.Graphics.Shader`, `Ryujinx.Common` and `Spv.Generator` 1.3.2, in `dm/third_party/ryujinx` with a few fixes listed in [its README](dm/third_party/ryujinx/README.md)) turns the games' shaders into SPIR-V. Its emulation of the kernel and system services is also a reference when the host's behaviour is in doubt.
+- **[Atmosphère](https://github.com/Atmosphere-NX/Atmosphere)**: its kernel, mesosphère, is the reference for Horizon's synchronization semantics (address arbiter, condition variables).
+- **[LibHac](https://github.com/Thealexbarney/LibHac)**: reads NSPs and layers updates over the base game in `dm/tools/nx_extract`.
+- **[SPIRV-Cross](https://github.com/KhronosGroup/SPIRV-Cross)**: SPIR-V to Metal Shading Language.
+- **[glslang](https://github.com/KhronosGroup/glslang)** compiles the GLSL of OpenGL games to SPIR-V for it.
+- **[MacNativeGames](https://github.com/ly05010419/MacNativeGames)** (MIT): the GPU widening of 8-bit indices and in-pass clears in `dm/gfx/nvn/nvn_mtl.m`, and the visibility-counter lowering in the shader translator.
+
+## Games nxnative plays
+
+The games upstream tests on Mac or iPhone, with their notes in [dm/games](dm/games/README.md#games). This fork does not test them. Under a game, "60 fps with 1.2.0" means it runs at 60 fps (30 on the Switch) with that update.
+
+<details>
+<summary>Show the gallery</summary>
 
 <!-- gallery: written by dm/tools/docs_gallery.py from docs/images/gallery.tsv; change the table, then run it -->
 <table>
@@ -320,10 +325,12 @@ Under a game, "60 fps with 1.2.0" means it runs at 60 fps (30 on the Switch) wit
 </table>
 <!-- end of gallery -->
 
-### For developers
+</details>
+
+## For developers
 
 [How it works](docs/development.md) · [Game notes](dm/games/README.md#games) · [Bring-up and debugging](docs/agents/README.md) · [Front ends](docs/frontends.md) · [Contributing](CONTRIBUTING.md)
 
-### License
+## License
 
 MIT ([LICENSE](LICENSE)). Third-party code keeps its own license ([dm/third_party](dm/third_party/README.md)).
