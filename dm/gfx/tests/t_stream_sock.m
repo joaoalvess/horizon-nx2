@@ -137,6 +137,7 @@ int main(void) { @autoreleasepool {
     capture_frames(flat, 1, &ticket);
     CHECK("the stream is on with only DM_STREAM", g_stream_on == 1);
     CHECK("no encoder runs before a client attaches", encoder_off());
+    CHECK("the display link paces presents before a client attaches", !atomic_load(&g_stream_pace));
     int fd = accept_within(lfd, 3000);
     CHECK("dmhost connects to the hub", fd >= 0);
     if (fd < 0) { printf("t_stream_sock: %d checks, %d failed\n", checks, failed); return 1; }
@@ -145,6 +146,7 @@ int main(void) { @autoreleasepool {
     uint8_t junk[10] = {0}; hub_send(fd, 99, 0, junk, sizeof junk);
     hub_attach(fd, 1280, 720, 8000);
     CHECK("ATTACH starts the encoder, after a type dmhost does not know", wait_until(encoder_on, 2000));
+    CHECK("an attached client takes presents off the display link", atomic_load(&g_stream_pace));
 
     st_tally t = {0};
     capture_reading(fd, &t, flat, 30, &ticket);
@@ -182,6 +184,7 @@ int main(void) { @autoreleasepool {
     uint64_t pauses0 = atomic_load(&g_st_pauses);
     hub_send(fd, DMS_DETACH, 0, NULL, 0);
     CHECK("DETACH stops the encoder", wait_until(encoder_off, 2000));
+    CHECK("DETACH gives presents back to the display link", !atomic_load(&g_stream_pace));
     st_tally dt = {0};
     hub_drain(fd, &dt, 0, 300);
     capture_frames(flat, 5, &ticket);
@@ -200,6 +203,7 @@ int main(void) { @autoreleasepool {
     close(fd);
     capture_frames(flat, 5, &ticket);
     CHECK("a hub that dies while attached stops the encoder", wait_until(encoder_off, 2000));
+    CHECK("a hub that dies gives presents back to the display link", !atomic_load(&g_stream_pace));
     CHECK("a hub that dies while attached asks for a pause", atomic_load(&g_st_pauses) == pauses0 + 1);
     fd = accept_within(lfd, 3000);
     CHECK("dmhost connects again after the hub died", fd >= 0);

@@ -55,6 +55,8 @@ static _Atomic int g_st_hub_hello, g_st_refused;
 static _Atomic uint32_t g_st_pads_mask;
 
 void dm_audio_stream(void (*sink)(uint64_t time_ns, const int16_t *pcm, int frames));
+void dm_focus_stream(int attached);
+void mtl_stream_pace(int on);
 
 static int st_env(const char *name, int fallback) { const char *e = getenv(name); return e && *e ? atoi(e) : fallback; }
 
@@ -332,11 +334,19 @@ static int st_start(int w, int h, int hevc, int kbps) {
     return 1;
 }
 
+static void st_client(int on) {
+    if (g_st_attached == on) return;
+    g_st_attached = on;
+    dm_audio_stream(on ? st_audio : NULL);
+    dm_focus_stream(on);
+    mtl_stream_pace(on);
+}
+
 static void st_detach(int pause, const char *why) {
     dispatch_sync(g_st_encq, ^{
         int was = g_st_attached;
-        g_st_attached = 0; atomic_store(&g_st_sending, 0);
-        if (was) dm_audio_stream(NULL);
+        atomic_store(&g_st_sending, 0);
+        st_client(0);
         st_stop();
         pthread_mutex_lock(&g_st_qmu); g_st_qgen = 0; st_drop_queued(1); pthread_mutex_unlock(&g_st_qmu);
         if (!was) return;
@@ -349,9 +359,9 @@ static void st_attach(int w, int h, uint32_t codec, int kbps, int hz) {
     dispatch_async(g_st_encq, ^{
         int was = g_st_attached, ok = st_start(w, h, codec == DMS_HVC1, kbps);
         pthread_mutex_lock(&g_st_qmu); g_st_qgen = ok ? g_st_gen : 0; st_drop_queued(1); pthread_mutex_unlock(&g_st_qmu);
-        if (!ok) { if (was) dm_audio_stream(NULL); g_st_attached = 0; atomic_store(&g_st_sending, 0); return; }
-        g_st_attached = 1; atomic_store(&g_st_sending, 1);
-        if (!was) dm_audio_stream(st_audio);
+        if (!ok) { atomic_store(&g_st_sending, 0); st_client(0); return; }
+        atomic_store(&g_st_sending, 1);
+        st_client(1);
         LOG("[stream] a client %s: %dx%d at %d Hz, %d kbit/s", was ? "attached again" : "attached", w, h, hz, kbps);
     });
 }

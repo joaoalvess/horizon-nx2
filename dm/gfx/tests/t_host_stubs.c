@@ -8,3 +8,4 @@ __attribute__((weak)) int dm_stream_open(int width, int height) { (void)width; (
 __attribute__((weak)) int dm_stream_take(void **surface, uint32_t *gen, int *width, int *height) { (void)surface; (void)gen; (void)width; (void)height; return -1; }
 __attribute__((weak)) void dm_stream_put(int i, uint32_t gen, uint64_t ticket, uint64_t capture_ns, double pass_s, int drawn) { (void)i; (void)gen; (void)ticket; (void)capture_ns; (void)pass_s; (void)drawn; }
 __attribute__((weak)) void dm_audio_stream(void (*sink)(uint64_t time_ns, const int16_t *pcm, int frames)) { (void)sink; }
+__attribute__((weak)) void dm_focus_stream(int attached) { (void)attached; }

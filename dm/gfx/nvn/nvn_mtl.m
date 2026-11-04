@@ -12433,6 +12433,9 @@ static void present_gpu_note(double s, int fx) {
     MLOG("present command buffer GPU time over 600 presents %s: p50 %.3f ms, p95 %.3f ms, max %.3f ms", fx ? "through MetalFX" : "through the bilinear pass", a[299], a[569], a[599]);
     n[fx] = 0;
 }
+static _Atomic int g_stream_pace;
+void mtl_stream_pace(int on) { atomic_store(&g_stream_pace, on != 0); }
+__attribute__((weak)) int front_window_shown(void) { return 1; }
 #if TARGET_OS_OSX
 int dm_stream_open(int width, int height); int dm_stream_take(IOSurfaceRef *surface, uint32_t *gen, int *width, int *height); void dm_stream_put(int i, uint32_t gen, uint64_t ticket, uint64_t capture_ns, double pass_s, int drawn);
 static struct { id<MTLTexture> tex; uint32_t gen; id<MTL4CommandAllocator> al; id<MTL4CommandBuffer> cb; id<MTLBuffer> uv; } g_stream[8];
@@ -12544,7 +12547,7 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
 #endif
 
     CAMetalLayer *layer = (__bridge CAMetalLayer *)front_metal_layer();
-    if (!layer) return 0;
+    if (!layer || (atomic_load(&g_stream_pace) && !front_window_shown())) return 0;
     if (g_present_layer_resident != layer) { [g_q4 addResidencySet:layer.residencySet]; g_present_layer_resident = layer; }
 #if TARGET_OS_OSX
     if (!layer.displaySyncEnabled) layer.displaySyncEnabled = YES;   // Windowed mode follows the display's vsync to prevent tearing
@@ -12760,7 +12763,13 @@ static void link_sync(void) {   // Called every frame by the game's present thre
         MLOG("display link: rescue ended, trying pacing mode %d (frame %llu)", want, (unsigned long long)atomic_load(&g_cur_frame));
     }
     if (g_rescue_mode) want = 0;
+    int paced = atomic_load(&g_stream_pace);
+    static int paced_was;
+    int paced_changed = paced != paced_was; paced_was = paced;
+    if (paced_changed && !paced) { g_stall_t0 = 0; __atomic_store_n(&g_link_tick_ns, now_ns(), __ATOMIC_RELAXED); }
+    if (paced) want = 0;
     pthread_mutex_unlock(&g_pq_mu);
+    if (paced_changed) { MLOG("present pacing: %s (frame %llu)", paced ? "a stream client is attached, the host's 60 Hz clock paces presents and the display link stays out" : "the stream client detached, the display link paces presents again", (unsigned long long)atomic_load(&g_cur_frame)); }
     if (want && mtl_fps_target() == 30) want = 3;   // Power-saving mode: display link at 30 Hz
     if (want) front_screen_match(want == 3 ? 30 : want == 2 ? 120 : 60);
     // The screen's rate changed (switched by front_screen_match, or another screen): the range again, virtual ticks or none. Taken only once the link object exists, so a change
