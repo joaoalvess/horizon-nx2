@@ -61,6 +61,22 @@ static void target_then_sampled(void){
     CHECK("a sampled object over a render target's storage shares its texture",rt && samp==rt); CHECK("and is not made CPU-written",!tex_cpu_written(s.serial));
     mtl_reg_tex(1,NULL,NULL); mtl_reg_tex(2,NULL,NULL); mtl_tex_release(&s); mtl_tex_release(&r); fx_close(&f);
 }
+static void twin_target_then_sampled(void){
+    fixture f; fx_open(&f); tex_t r=fx_tex(&f,9854); r.d.format=NVN_FORMAT_RGBA8; nvn_tex_layout(&r.d,&r.L); memset(f.mem,0x40,r.L.size); mtl_tex_init(&r); mtl_reg_tex(1,&r,NULL);
+    id<MTLTexture> rt=resolve(1,0);
+    tex_t s=r; s.serial=9855; s.d.format=NVN_FORMAT_RGBA8_SRGB; mtl_tex_init(&s); mtl_reg_tex(2,&s,NULL);
+    id<MTLTexture> samp=resolve(2,1);
+    CHECK("a sampled sRGB object over its linear twin's render target is a view of that texture",rt && samp==rt); CHECK("and is not made CPU-written",!tex_cpu_written(s.serial));
+    mtl_reg_tex(1,NULL,NULL); mtl_reg_tex(2,NULL,NULL); mtl_tex_release(&s); mtl_tex_release(&r); fx_close(&f);
+}
+static void twin_3d_target_then_sampled(void){
+    fixture f; fx_open(&f); tex_t r=fx_tex(&f,9856); r.d.target=NVN_TEXTURE_TARGET_3D; r.d.format=NVN_FORMAT_RGBA8; r.d.width=r.d.height=8; r.d.depth=4; r.d.levels=1; nvn_tex_layout(&r.d,&r.L); memset(f.mem,0x40,r.L.size); mtl_tex_init(&r); mtl_reg_tex(1,&r,NULL);
+    id<MTLTexture> rt=resolve(1,0);
+    tex_t s=r; s.serial=9857; s.d.format=NVN_FORMAT_RGBA8_SRGB; mtl_tex_init(&s); mtl_reg_tex(2,&s,NULL);
+    id<MTLTexture> samp=resolve(2,1);
+    CHECK("a 3D sRGB object over its linear twin's texture is no view of it",rt && samp && samp!=rt); CHECK("so its sampled first use makes it CPU-written",tex_cpu_written(s.serial));
+    mtl_reg_tex(1,NULL,NULL); mtl_reg_tex(2,NULL,NULL); mtl_tex_release(&s); mtl_tex_release(&r); fx_close(&f);
+}
 int main(void){@autoreleasepool{mtl_init();
-    sampled_first(0); not_sampled_first(); target_then_sampled();
+    sampled_first(0); not_sampled_first(); target_then_sampled(); twin_target_then_sampled(); twin_3d_target_then_sampled();
     printf("t_first_sampled: %d checks, %d failed\n",checks,failed);return failed!=0;}}
