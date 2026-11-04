@@ -10,7 +10,7 @@ Other files of this folder: [overview.md](overview.md) (the thread inventory), [
 
 | Name | What | Line |
 |---|---|---|
-| `G` | The scheduler mutex. It is the mutex of every thread's condition variables; since refactor item H3 those are signalled after `G` is released, except in `block` and past 16 queued signals | `:98` |
+| `G` | The scheduler mutex. It is the mutex of every thread's condition variables; since refactor item H3 those are signalled after `G` is released, except in `block` and past 16 queued signals. Since H5 it is also the mutex of `g_hand_cv`, which is broadcast under `G` and never deferred | `:98` |
 | `g_h[4096]` | Handle table: type and object. Handle = 0x1000 + index; index 0 is unused, so the first handle is 0x1001 | `:99-100`; `h_new` `:105-108` (G held) |
 | `h_peek`, `h_get` | Lookups. `H_CUR_THREAD` (0xFFFF8000) gives the caller. `h_get` also logs a miss | `:109-119` |
 | `g_keythr` | TSD key: pthread → `thr_t` | `:101`; created at `:513` |
@@ -22,6 +22,8 @@ Other files of this folder: [overview.md](overview.md) (the thread inventory), [
 | `g_se[512]`, `g_se_lock` | System event bindings | `:38-41` |
 | `g_core_preempt` | `DM_PREEMPT` or the profile's `DM_GAME_CORE_PREEMPT` | `:96`; set at `:515` |
 | `g_preempt_n`, `g_preempt_ns` | Handoff count and time | `:95` |
+| `g_hand_cv` | Since H5: the condition variable of the same-core handoff wait and of a started thread's first service request | `hle_thread.c` (beside `G`) |
+| `g_hand_waiters` | Since H5: threads in the handoff wait (`G` held); `hand_wake` does nothing while it is 0 | `hle_thread.c` (beside `G`) |
 | `g_qos_map`, `g_qos_e1`, `g_qos_e2` | `DM_QOS_MAP`, `DM_QOS_EDGES` (44, 59) | `:307-312` |
 
 Lock order: `G`, then `g_se_lock` (`:37`).
@@ -40,6 +42,8 @@ Result codes: `R_TIMEOUT` 0xEA01, `R_CANCELLED` 0xEC01, `R_BAD_HANDLE` 0xE401, `
 | `wkind`, `woke`, `waddr`, `wkey`, `wtag`, `wres` | The current wait. Kinds: 0 none, 1 lock, 2 condition, 3 address, 4 sync object | `:59` |
 | `sleeping` | In a timed sleep or a back-off sleep (atomic) | `:60` |
 | `yield_pending` | This thread woke a higher-priority thread pinned to its core | `:61` |
+| `hand_wait` | Since H5: inside `dm_yield_to_core_peers`'s wait (`G` held) | after `yield_pending` |
+| `start_wait` | Since H5: a started thread's first service request waits for this thread's return (atomic; set by the requester under `G`, cleared by `svc_thread`) | after `yield_pending` |
 | `hand_epoch` | This thread's current handoff (atomic) | `:62` |
 | `start_by`, `start_epoch` | The starter whose StartThread holds for this thread | `:63` |
 | `hand[4]`, `nhand` | The handoffs this thread was made runnable for | `:64` |
@@ -180,7 +184,7 @@ On Horizon, a woken higher-priority thread pinned to the caller's core runs befo
 3. `dm_yield_to_core_peers(all)` (`:192-205`):
    1. Returns at once if the caller's mask allows another core (`:195`).
    2. Under `G`, looks for a peer that is started, not exited, not host-owned, pinned to the caller's core, higher priority, runnable, and either `all` or in this caller's handoff (`thr_in_handoff`, `:136-139`) (`:199-200`).
-   3. If one exists: sleeps 50 µs and scans again (`:203`).
+   3. If one exists: sets `hand_wait`, counts itself in `g_hand_waiters`, waits on `g_hand_cv` with `G` for at most 50 µs, then scans again (`:203`; since H5). The scan and the wait are one hold of `G`. `hand_wake` broadcasts from `hand_leave`, `thread_exit`, SetThreadPriority (before the write), the SetThreadActivity pause, and `note_runnable`'s reset (handoff mode only). In handoff mode it broadcasts when the thread is the waiter, or is in a waiter's live handoff, higher priority and pinned to its core. In all-peers mode it broadcasts when the thread is not host-owned, has higher priority than a waiter and is pinned to that waiter's core. Changes made without `G` (`*host_work`, `sleeping`, `host_owned`, SetThreadCoreMask) are seen at the 50 µs re-check.
 4. Then `yield_pending` = 0 and `hand_epoch++` (`:923`). This ends the handoff for every thread it made runnable.
 5. A woken thread leaves its handoffs (`hand_leave`, `:141`) when it blocks (`:253`), sleeps or yields to any thread (`:964`), or enters a native wait (`:176`).
 
@@ -198,7 +202,7 @@ Ways a guest thread in host code stops holding its core:
 `dm_thread_service_request` (`:150-169`):
 1. Returns if the caller holds no handoff (`:154`).
 2. Takes `start_by` / `start_epoch`, calls `hand_leave`, keeps `start_by`, `native_wait++` (`:155-158`).
-3. For up to `SERVICE_START_WAIT_NS` (5 ms), polls every 50 µs until the starter's `hand_epoch` moves (`:160-165`).
+3. For up to `SERVICE_START_WAIT_NS` (5 ms): sets the starter's `start_wait`; if the starter's `hand_epoch` has not moved, waits on `g_hand_cv` for at most 50 µs (`:160-165`; since H5). `svc_thread` takes `G` and broadcasts after `hand_epoch++` when `start_wait` was set, after its `cv_flush`.
 4. Clears `start_by`, `native_wait--`; if the starter came back, sleeps `SERVICE_ROUND_TRIP_NS` (200 µs) (`:166-168`).
 
 Every use of `dm_host_work` in `dm/` outside the tests, from a grep of `dm_host_work`, `dm_host_mutex_lock` and `dm_host_thread_join` at this commit:
@@ -308,7 +312,7 @@ These read or write fields that other paths read under `G`. They are stated as c
 | GetThreadId | `g_h`, `id` (read) | `:1021` | |
 | GetCurrentProcessorNumber | own `core`, `mask` | `:987-988` | |
 | `dm_yield_to_core_peers` entry | own `core`, `mask` | `:194-195` | |
-| `svc_thread` | own `yield_pending`; `hand_epoch` (atomic) | `:919`, `:923` | `hand_epoch`: `thr_in_handoff` (`:137`), `note_runnable` (`:240`, `:242`), StartThread (`:954`), `dm_thread_service_request` (`:161`) |
+| `svc_thread` | own `yield_pending`; `hand_epoch` (atomic); own `start_wait` (atomic exchange, H5), then a `G` section that broadcasts `g_hand_cv` when it was set, after `cv_flush` | `:919`, `:923` | `hand_epoch`: `thr_in_handoff` (`:137`), `note_runnable` (`:240`, `:242`), StartThread (`:954`), `dm_thread_service_request` (`:161`) |
 | `svc_thread_impl` entry | own `last_svc`, `last_lr`, `nsvc` | `:927` | `hitch_grab` (`:448-449`); `svc_thread_dump` reads them with no lock |
 | `dm_thread_mark_host` | own `host_owned` (write) | `:129`, from `spawn_tramp` (`dm/host/hle_guestthread.c:16`) | `dm_yield_to_core_peers` (`:200`), `note_runnable` (`:239`), `thr_limit_used` (`:609`), `dm_thread_cpu` (`:869`) |
 | `thr_svc_enter` | own `svc_pc`, `svc_x18` (plain); `svc_regs` store and `svc_state` bit 0 set (atomic); `qos_pending` (atomic) | `:397-398` | `ctx_fill` (`:424-425`); SetThreadActivity reads `svc_state` (`:997`) |

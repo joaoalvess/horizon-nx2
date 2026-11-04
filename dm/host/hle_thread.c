@@ -60,6 +60,8 @@ typedef struct thr {
     int wkind, woke; uint64_t waddr, wkey; uint32_t wtag; int64_t wres;
     _Atomic int sleeping;      // inside SleepThread's timed sleep (not runnable; used by dm_yield_to_core_peers)
     int yield_pending;         // this caller woke a higher-priority thread pinned to its core: hand off before returning to guest code
+    int hand_wait;
+    _Atomic int start_wait;
     _Atomic uint64_t hand_epoch;   // this thread's current handoff: threads it makes runnable belong to it until its next thread SVC returns (svc_thread)
     struct thr *start_by; uint64_t start_epoch;   // the lower-priority thread on this core whose StartThread holds for this thread, and that handoff (dm_thread_service_request)
     struct { struct thr *by; uint64_t epoch; } hand[4]; int nhand;   // the handoffs this thread was made runnable for (its waker's, then those the waker belonged to), until it blocks (note_runnable / hand_leave)
@@ -97,6 +99,8 @@ static _Atomic uint64_t g_preempt_n, g_preempt_ns;   // same-core handoffs: coun
 static int g_core_preempt;   // also check already-runnable peers after every thread SVC (profile / DM_PREEMPT)
 
 static pthread_mutex_t G = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t g_hand_cv = PTHREAD_COND_INITIALIZER;
+static int g_hand_waiters;
 #define MAX_H 4096
 static struct { int type; void *obj; } g_h[MAX_H];
 static pthread_key_t g_keythr;
@@ -139,8 +143,19 @@ static int thr_in_handoff(const thr_t *t, const thr_t *self) {
     for (int i = 0; i < t->nhand; i++) if (t->hand[i].by == self && t->hand[i].epoch == self->hand_epoch) return 1;
     return 0;
 }
+static void hand_wake(const thr_t *t) {
+    if (!g_hand_waiters) return;
+    int hit = t->hand_wait;
+    for (int i = 0; i < t->nhand && !hit; i++) {
+        const thr_t *w = t->hand[i].by;
+        hit = w->hand_wait && t->hand[i].epoch == w->hand_epoch && t->prio < w->prio && t->mask == 1ull << (w->core & 63);
+    }
+    for (const thr_t *w = g_core_preempt && !t->host_owned ? g_all : NULL; w && !hit; w = w->all)
+        hit = w->hand_wait && t->prio < w->prio && t->mask == 1ull << (w->core & 63);
+    if (hit) pthread_cond_broadcast(&g_hand_cv);
+}
 // Holding G. t blocked (a guest wait, a timed sleep, YieldToAnyThread): it gave its core back, so it no longer holds the threads whose handoff made it runnable
-static void hand_leave(thr_t *t) { t->nhand = 0; t->start_by = NULL; }
+static void hand_leave(thr_t *t) { hand_wake(t); t->nhand = 0; t->start_by = NULL; }
 // A file system call is a request to fsp-srv on Horizon: svcSendSyncRequest blocks the caller until the service replies, and a lower-priority thread of its core runs meanwhile.
 // The host answers in the caller's own thread, so without this the caller never gives up its core and its waker stays held until it blocks or exits. Digimon Story Cyber Sleuth's
 // save manager (main+0x16cdf0 and its neighbours) sets its busy flag after StartThread returns, and its priority-38 worker clears it last thing: on Horizon the worker's first request lets
@@ -160,10 +175,9 @@ void dm_thread_service_request(void) {
     me->native_wait++;   // not runnable meanwhile: with core_preempt the starter waits for every runnable peer of its core, not only for this handoff
     uint64_t t0 = by ? now_ns() : 0; int back = 0;
     while (me->start_by && now_ns() - t0 < SERVICE_START_WAIT_NS) {
+        atomic_store(&me->start_by->start_wait, 1);
         if (atomic_load(&me->start_by->hand_epoch) != epoch) { back = 1; break; }
-        pthread_mutex_unlock(&G);
-        { struct timespec ts = {0, 50000}; nanosleep(&ts, 0); }
-        pthread_mutex_lock(&G);
+        { struct timespec ts = {0, 50000}; pthread_cond_timedwait_relative_np(&g_hand_cv, &G, &ts); }
     }
     me->start_by = NULL; me->native_wait--;
     pthread_mutex_unlock(&G);
@@ -200,9 +214,10 @@ int dm_yield_to_core_peers(int all) {
         pthread_mutex_lock(&G);
         for (thr_t *t = g_all; t && !busy; t = t->all)
             if (t != self && t->started && !t->exited && !t->host_owned && t->mask == bit && t->prio < self->prio && thr_runnable(t) && (all || thr_in_handoff(t, self))) busy = 1;
+        if (busy) { struct timespec ts = {0, 50000}; self->hand_wait = 1; g_hand_waiters++; pthread_cond_timedwait_relative_np(&g_hand_cv, &G, &ts); g_hand_waiters--; self->hand_wait = 0; }
         pthread_mutex_unlock(&G);
         if (!busy) return waited;
-        { struct timespec ts = {0, 50000}; nanosleep(&ts, 0); } waited = 1;
+        waited = 1;
     }
 }
 // Take a host lock that an HLE call holds while it runs guest code. A guest thread waiting for it is in a native HLE wait (dm_thread_native_wait), blocked as it would be
@@ -246,6 +261,7 @@ static thr_t *pick(int kind, uint64_t a) {
 // and for the worker (30) the dispatcher wakes in turn, though the dispatcher's wake of an equal-priority thread is no handoff of its own
 static void note_runnable(thr_t *t) {
     thr_t *self = pthread_getspecific(g_keythr);
+    if (!g_core_preempt) hand_wake(t);
     t->nhand = 0;
     if (!self || self == t || t->host_owned) return;
     t->hand[t->nhand].by = self; t->hand[t->nhand++].epoch = self->hand_epoch;
@@ -381,7 +397,7 @@ static void thread_exit(thr_t *t) {
     t->exit_ns = now_ns(); t->exit_tick = dm_thread_tick_fn ? dm_thread_tick_fn() : 0;
     // No logging here: the exit happens on the guest thread's own stack (some are only a dozen or so KiB), and a printf with floating point would blow the stack (real-device smoke test: SIGBUS when LibcurlResolver exits, backtrace fprintf → __dtoa). Only the time is recorded, and it is printed later in the state dump
     pthread_mutex_lock(&G);
-    t->exited = 1;
+    t->exited = 1; hand_wake(t);
     wake_sync_waiters(t);   // Synchronization waiters on this thread re-check
     pthread_setspecific(g_keythr, NULL);
     if (t->closed) thr_free(t);
@@ -951,6 +967,7 @@ int svc_thread(int num, uint64_t *regs) {
         if (w) { g_preempt_n++; g_preempt_ns += now_ns() - t0; }
     }
     if (me) { me->yield_pending = 0; me->hand_epoch++; }   // the handoff is complete: threads this one made runnable no longer hold it
+    if (me && atomic_exchange(&me->start_wait, 0)) { pthread_mutex_lock(&G); pthread_cond_broadcast(&g_hand_cv); pthread_mutex_unlock(&G); }
     return r;
 }
 static int svc_thread_impl(int num, uint64_t *regs) {
@@ -1002,7 +1019,7 @@ static int svc_thread_impl(int num, uint64_t *regs) {
     case 0x0C: { pthread_mutex_lock(&G); thr_t *t = h_get((uint32_t)regs[1], O_THREAD);
         regs[0] = t ? 0 : R_BAD_HANDLE; regs[1] = t ? (uint64_t)t->prio : 0; pthread_mutex_unlock(&G); return 1; }
     case 0x0D: { pthread_mutex_lock(&G); thr_t *t = h_get((uint32_t)regs[0], O_THREAD);   // SetThreadPriority; under DM_QOS_MAP the class follows (now on the calling thread, else at the target's next SVC)
-        if (t) { t->prio = (int)regs[1]; if (g_qos_map) { if (t == cur()) qos_apply(t); else atomic_store(&t->qos_pending, 1); } }
+        if (t) { hand_wake(t); t->prio = (int)regs[1]; if (g_qos_map) { if (t == cur()) qos_apply(t); else atomic_store(&t->qos_pending, 1); } }
         regs[0] = t ? 0 : R_BAD_HANDLE; pthread_mutex_unlock(&G); return 1; }
     case 0x0E: { thr_t *t = h_get((uint32_t)regs[2], O_THREAD);
                  regs[0] = t ? 0 : R_BAD_HANDLE; regs[1] = t ? (uint64_t)(uint32_t)t->core : 0; regs[2] = t ? t->mask : 0; return 1; }
@@ -1023,7 +1040,7 @@ static int svc_thread_impl(int num, uint64_t *regs) {
         if (!t) r = R_BAD_HANDLE;
         else if (t == me) r = R_BAD_STATE;
         else if (act == 1) {
-            atomic_store(&t->pause_req, 1);
+            atomic_store(&t->pause_req, 1); hand_wake(t);
             int st = atomic_fetch_or(&t->svc_state, 2);
             if (!t->started || t->exited || (st & 1)) t->paused = 1;
             uint64_t t0 = now_ns(); int warned = 0;

@@ -241,6 +241,13 @@ $(B)/t_cvsignal: t_cvsignal.c t_condvar_stub.c ../hle_thread.c ../dm.h $(GAME_H)
 cvsignal: $(B)/t_cvsignal
 	$(B)/t_cvsignal
 run: cvsignal
+$(B)/t_handoff_wake: t_handoff_wake.c t_condvar_stub.c ../hle_thread.c ../dm.h $(GAME_H) | $(B)
+	$(CLANG) -O2 -flto=thin -g -Wall -Werror -Wno-unused-function -I.. $(GINC) -o $@ t_handoff_wake.c t_condvar_stub.c
+.PHONY: handoff-wake
+handoff-wake: $(B)/t_handoff_wake
+	$(B)/t_handoff_wake
+	$(B)/t_handoff_wake --all-peers
+run: handoff-wake
 # the Vorbis tests build their own packets and need no game profile (they build without GAME)
 $(B)/t_vorbis: t_vorbis.c ../../third_party/stb_vorbis/stb_vorbis.c | $(B)
 	$(CLANG) -O2 -flto=thin -g -Wno-unused-function -Wno-tautological-compare -o $@ t_vorbis.c
