@@ -31,6 +31,7 @@ _Static_assert(sizeof(NpadState) == 0x28, "NpadState");
 // their own path because a connected controller publishes its whole state on every change (a DualShock 4's sticks change all the time), which overwrote them on the shared one;
 // the separate paths also keep scripted input out of DM_REC, which records the physical ones (rec_read)
 static _Atomic uint64_t g_btn, g_axes, g_latch, g_sc_btn, g_sc_axes, g_sc_latch, g_pad_btn[DM_PLAYERS], g_pad_axes[DM_PLAYERS], g_pad_latch[DM_PLAYERS];
+static _Atomic uint64_t g_net_btn[DM_PLAYERS], g_net_axes[DM_PLAYERS], g_net_latch[DM_PLAYERS];
 static _Atomic int64_t g_sampling = 1 << 16;   // starts high so the history entries below the newest keep positive sampling numbers
 static uint64_t pack(int32_t lx, int32_t ly, int32_t rx, int32_t ry) {
     return (uint64_t)(uint16_t)lx | (uint64_t)(uint16_t)ly << 16 | (uint64_t)(uint16_t)rx << 32 | (uint64_t)(uint16_t)ry << 48;
@@ -42,7 +43,7 @@ static const uint64_t SHAKE_CYCLE_NS = (uint64_t)(1e9 / SHAKE_HZ);
 static _Atomic uint64_t g_shake_t0, g_shake_end;   // the current shake's start and end; end = UINT64_MAX while held
 static _Atomic int g_shake_on;
 static void shake_note(void) {
-    int on = ((atomic_load(&g_btn) | atomic_load(&g_sc_btn) | atomic_load(&g_pad_btn[0])) & DM_BTN_SHAKE) != 0;
+    int on = ((atomic_load(&g_btn) | atomic_load(&g_sc_btn) | atomic_load(&g_pad_btn[0]) | atomic_load(&g_net_btn[0])) & DM_BTN_SHAKE) != 0;
     if (atomic_exchange(&g_shake_on, on) == on) return;
     uint64_t t = guest_ns();
     if (on) { if (t >= atomic_load(&g_shake_end)) atomic_store(&g_shake_t0, t); atomic_store(&g_shake_end, UINT64_MAX); }
@@ -58,6 +59,11 @@ void dm_pad_set_player(int p, uint64_t buttons, int32_t lx, int32_t ly, int32_t 
     if (!p) shake_note();
 }
 void dm_pad_set(uint64_t buttons, int32_t lx, int32_t ly, int32_t rx, int32_t ry) { dm_pad_set_player(0, buttons, lx, ly, rx, ry); }
+void dm_net_pad_set(int p, uint64_t buttons, int32_t lx, int32_t ly, int32_t rx, int32_t ry) {
+    if (p < 0 || p >= DM_PLAYERS) return;
+    uint64_t old = atomic_exchange(&g_net_btn[p], buttons); atomic_fetch_or(&g_net_latch[p], buttons & ~old); atomic_store(&g_net_axes[p], pack(lx, ly, rx, ry));
+    if (!p) shake_note();
+}
 static void script_set(uint64_t buttons, int32_t lx, int32_t ly, int32_t rx, int32_t ry) {
     uint64_t old = atomic_exchange(&g_sc_btn, buttons); atomic_fetch_or(&g_sc_latch, buttons & ~old); atomic_store(&g_sc_axes, pack(lx, ly, rx, ry));
     shake_note();
@@ -292,14 +298,27 @@ static void note_merged(void) {   // logs the players whose npad the game does n
         else LOG("hid: player %d's controller is not used: the game supports no npad %d", p + 1, p);
     }
 }
+static _Atomic uint32_t g_front_players = 1, g_net_players;
+static pthread_mutex_t g_players_mu = PTHREAD_MUTEX_INITIALIZER;
+static void players_apply(void) {
+    pthread_mutex_lock(&g_players_mu);
+    uint32_t mask = (atomic_load(&g_front_players) | atomic_load(&g_net_players) | 1u) & ((1u << DM_PLAYERS) - 1);
+    uint32_t old = atomic_exchange(&g_players, mask);
+    pthread_mutex_unlock(&g_players_mu);
+    for (int p = 1; p < DM_PLAYERS; p++) if ((old ^ mask) >> p & 1 && atomic_load(&g_ids_supported) & id_bit((uint32_t)p)) style_changed((uint32_t)p);
+    note_merged();
+}
 void dm_pad_players(uint32_t mask) {
     mask = (mask | 1u) & ((1u << DM_PLAYERS) - 1);
-    uint32_t old = atomic_exchange(&g_players, mask);
-    for (int p = 1; p < DM_PLAYERS; p++) if ((old ^ mask) >> p & 1) {
-        if (!(mask >> p & 1)) dm_pad_set_player(p, 0, 0, 0, 0, 0);   // a controller that went away leaves nothing pressed
-        if (atomic_load(&g_ids_supported) & id_bit((uint32_t)p)) style_changed((uint32_t)p);
-    }
-    note_merged();
+    uint32_t old = atomic_exchange(&g_front_players, mask);
+    for (int p = 1; p < DM_PLAYERS; p++) if ((old & ~mask) >> p & 1) dm_pad_set_player(p, 0, 0, 0, 0, 0);   // a controller that went away leaves nothing pressed
+    players_apply();
+}
+void dm_net_pads(uint32_t mask) {
+    mask &= (1u << DM_PLAYERS) - 1;
+    uint32_t old = atomic_exchange(&g_net_players, mask);
+    for (int p = 0; p < DM_PLAYERS; p++) if ((old & ~mask) >> p & 1) { dm_net_pad_set(p, 0, 0, 0, 0, 0); dm_motion_clear_net(p); }
+    players_apply();
 }
 
 // DM_REC=<file>: player 1's physical input (keyboard / touch, its controller and the controllers merged into it, as fill reads them) written as DM_KEYS steps, so a run plays again
@@ -420,11 +439,11 @@ static void fill(NpadState *s, uint32_t id, uint32_t style) {
         uint64_t k = atomic_load(&g_axes); for (int i = 0; i < 4; i++) a[i] = ax(k, i);
     }
     for (int p = 0; p < DM_PLAYERS; p++) if (src >> p & 1) {
-        b |= atomic_load(&g_pad_btn[p]) | atomic_exchange(&g_pad_latch[p], 0);
-        uint64_t v = atomic_load(&g_pad_axes[p]); for (int i = 0; i < 4; i++) a[i] = pick(a[i], ax(v, i));
+        b |= atomic_load(&g_pad_btn[p]) | atomic_exchange(&g_pad_latch[p], 0) | atomic_load(&g_net_btn[p]) | atomic_exchange(&g_net_latch[p], 0);
+        uint64_t v = atomic_load(&g_pad_axes[p]), n = atomic_load(&g_net_axes[p]); for (int i = 0; i < 4; i++) a[i] = pick(pick(a[i], ax(v, i)), ax(n, i));
     }
     if (!pl) {   // the physical sources so far (DM_REC records them, DM_BTN_SHAKE only from player 1's own controller and the keyboard, as shake_note), then the scripted path
-        if (atomic_load_explicit(&g_rec_on, memory_order_relaxed)) rec_read((b & 0xffffull) | ((atomic_load(&g_btn) | atomic_load(&g_pad_btn[0])) & DM_BTN_SHAKE), a);
+        if (atomic_load_explicit(&g_rec_on, memory_order_relaxed)) rec_read((b & 0xffffull) | ((atomic_load(&g_btn) | atomic_load(&g_pad_btn[0]) | atomic_load(&g_net_btn[0])) & DM_BTN_SHAKE), a);
         b |= atomic_load(&g_sc_btn) | atomic_exchange(&g_sc_latch, 0);
         uint64_t c = atomic_load(&g_sc_axes); for (int i = 0; i < 4; i++) a[i] = pick(a[i], ax(c, i));
     }
@@ -451,8 +470,8 @@ uint64_t dm_cheats_keys(void) {
     uint64_t b = 0; int32_t a[4] = {0};
     b |= atomic_load(&g_btn);
     for (int p = 0; p < DM_PLAYERS; p++) {
-        b |= atomic_load(&g_pad_btn[p]);
-        uint64_t v = atomic_load(&g_pad_axes[p]); for (int i = 0; i < 4; i++) a[i] = pick(a[i], ax(v, i));
+        b |= atomic_load(&g_pad_btn[p]) | atomic_load(&g_net_btn[p]);
+        uint64_t v = atomic_load(&g_pad_axes[p]), n = atomic_load(&g_net_axes[p]); for (int i = 0; i < 4; i++) a[i] = pick(pick(a[i], ax(v, i)), ax(n, i));
     }
     uint64_t k = atomic_load(&g_axes); for (int i = 0; i < 4; i++) a[i] = pick(a[i], ax(k, i));
     b &= 0xffffull;
@@ -545,6 +564,7 @@ enum { MOTION_STALE_NS = 300000000 };
 typedef struct { pthread_mutex_t mu; motion_state st; uint64_t last_ns, received_ns, logged; } live_motion;
 static live_motion g_motion[DM_PLAYERS] = {[0 ... DM_PLAYERS - 1] = {.mu = PTHREAD_MUTEX_INITIALIZER}};
 static live_motion g_hid_motion[DM_PLAYERS] = {[0 ... DM_PLAYERS - 1] = {.mu = PTHREAD_MUTEX_INITIALIZER}};
+static live_motion g_net_motion[DM_PLAYERS] = {[0 ... DM_PLAYERS - 1] = {.mu = PTHREAD_MUTEX_INITIALIZER}};
 static live_motion g_phone_motion = {.mu = PTHREAD_MUTEX_INITIALIZER};
 static pthread_once_t g_motion_once = PTHREAD_ONCE_INIT;
 static motion_map g_motion_map; static float g_motion_gain = 0.5f; static int g_motion_off, g_motion_log, g_phone_mode;
@@ -561,7 +581,7 @@ static void motion_set(int p, const float acc[3], const float rot[3], int source
     pthread_once(&g_motion_once, motion_env); if (g_motion_off) return;
     static motion_map identity = {{0, 1, 2}, {1, 1, 1}, 1, 1};
     // Each transport owns its orientation. HID batches carry three sample times; arrival time controls freshness, never their integration intervals.
-    live_motion *m = source == 1 ? &g_phone_motion : source == 2 ? &g_hid_motion[p] : &g_motion[p];
+    live_motion *m = source == 1 ? &g_phone_motion : source == 2 ? &g_hid_motion[p] : source == 3 ? &g_net_motion[p] : &g_motion[p];
     uint64_t now = now_ns(), t = sample_ns ? sample_ns : now;
     if (!t || t > now || now - t > MOTION_STALE_NS) return;
     pthread_mutex_lock(&m->mu);
@@ -572,7 +592,7 @@ static void motion_set(int p, const float acc[3], const float rot[3], int source
     if (g_motion_log && !p && t - m->logged > 1000000000ull) {
         m->logged = t;
         LOG("[hid] motion player 1 (%s): acc %+.2f %+.2f %+.2f G, gyro %+.3f %+.3f %+.3f rev/s (flat and still should read acc 0 0 -1)",
-            source == 1 ? "phone" : source == 2 ? "controller HID" : "controller", m->st.acc[0], m->st.acc[1], m->st.acc[2], m->st.gyro[0], m->st.gyro[1], m->st.gyro[2]);
+            source == 1 ? "phone" : source == 2 ? "controller HID" : source == 3 ? "stream" : "controller", m->st.acc[0], m->st.acc[1], m->st.acc[2], m->st.gyro[0], m->st.gyro[1], m->st.gyro[2]);
     }
     m->last_ns = t; m->received_ns = now;
     pthread_mutex_unlock(&m->mu);
@@ -587,6 +607,11 @@ void dm_motion_clear(int p) {
 void dm_motion_clear_hid(int p) {
     if (p < 0 || p >= DM_PLAYERS) return;
     pthread_mutex_lock(&g_hid_motion[p].mu); g_hid_motion[p].last_ns = 0; pthread_mutex_unlock(&g_hid_motion[p].mu);
+}
+void dm_motion_set_net(int p, const float acc[3], const float rot[3], uint64_t t) { if (t) motion_set(p, acc, rot, 3, t); }
+void dm_motion_clear_net(int p) {
+    if (p < 0 || p >= DM_PLAYERS) return;
+    pthread_mutex_lock(&g_net_motion[p].mu); g_net_motion[p].last_ns = 0; pthread_mutex_unlock(&g_net_motion[p].mu);
 }
 static uint64_t motion_copy(live_motion *m, motion_state *out) {   // copies a source while it is fresh; returns its timestamp
     uint64_t t;
@@ -603,7 +628,8 @@ static int motion_live(int p, motion_state *out) {
     // Match the button path: in a one-player game, a controller in another slot also drives player 1.
     uint32_t src = p ? 1u << p : 1u | merged_players(); uint64_t newest = 0;
     for (int i = 0; i < DM_PLAYERS; i++) if (src >> i & 1) {
-        motion_state st; uint64_t t = motion_copy(&g_motion[i], &st);
+        motion_state st; uint64_t t = motion_copy(&g_net_motion[i], &st);
+        if (!t) t = motion_copy(&g_motion[i], &st);
         if (!t) t = motion_copy(&g_hid_motion[i], &st);
         if (t > newest) { newest = t; *out = st; }
     }

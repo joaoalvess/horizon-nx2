@@ -484,6 +484,36 @@ static void t_motion_hid(void) {
     dm_pad_players(1); g_phone_mode = -1;
 }
 
+static void t_net(void) {
+    g_mode = 1; dm_pad_players(1); ids((uint32_t[]){0, 1, NPAD_HANDHELD}, 3); g_signals = 0;
+    static uint8_t ev[0x40];
+    h_hid_BindStyleEv(&(uint32_t){1}, ev, 0);
+    dm_net_pads(0x3);
+    CHECK(h_hid_GetStyle(&(uint32_t){1}) == STYLE_FULLKEY && g_signals == 1 && g_signalled == ev, "stream: the hub's player 2 connects No2 and signals its style event");
+    dm_net_pad_set(0, DM_BTN_A, 0, 0, 0, 0); dm_input_set(DM_BTN_X, -100, 0, 0, 0); dm_net_pad_set(1, DM_BTN_B, 500, 0, 0, 0);
+    CHECK(buttons_of(0, STYLE_FULLKEY) == (DM_BTN_A | DM_BTN_X) && lx_of(0) == -100, "stream: the hub's player 1 and the Mac's keyboard are ORed, the stick deflected more wins");
+    CHECK(buttons_of(1, STYLE_FULLKEY) == DM_BTN_B && lx_of(1) == 500, "stream: the hub's player 2 reads on No2");
+    dm_net_pad_set(0, DM_BTN_Y, 0, 0, 0, 0); dm_net_pad_set(0, 0, 0, 0, 0, 0);
+    CHECK(buttons_of(0, STYLE_FULLKEY) == (DM_BTN_X | DM_BTN_Y), "stream: a press released before the game's read is latched");
+    CHECK(buttons_of(0, STYLE_FULLKEY) == DM_BTN_X, "stream: the latch is taken by that read");
+    dm_pad_players(0x3); dm_pad_set_player(1, DM_BTN_L, 0, 0, 0, 0);
+    CHECK(buttons_of(1, STYLE_FULLKEY) == (DM_BTN_B | DM_BTN_L), "stream: the Mac's and the hub's controller on one player are ORed");
+    g_signals = 0; dm_pad_players(0x1);
+    CHECK(g_signals == 0 && h_hid_GetStyle(&(uint32_t){1}) == STYLE_FULLKEY && buttons_of(1, STYLE_FULLKEY) == DM_BTN_B, "stream: the Mac's player 2 going away keeps the hub's connected");
+    CHECK(atomic_load(&g_pad_btn[1]) == 0, "stream: the Mac's player 2 going away releases its own input");
+    dm_net_pads(0x1);
+    CHECK(h_hid_GetStyle(&(uint32_t){1}) == 0 && g_signals == 1 && atomic_load(&g_net_btn[1]) == 0, "stream: the hub's player 2 going away disconnects No2 and releases it");
+    uint32_t h = 0; SixAxisState st; float flat[3] = {0, 0, -1}, tilted[3] = {.5f, 0, -.8660254f}, still[3] = {0, 0, 0};
+    motion_now += 1000000000; g_phone_mode = 0;
+    dm_motion_set_hid(0, flat, still, motion_now); dm_motion_set_net(0, tilted, still, motion_now);
+    h_hid_SixStates(&st, 1, &h);
+    CHECK(st.acc[0] == .5f, "stream: the hub's six-axis, in the Switch frame, wins over the Mac's while fresh");
+    dm_net_pads(0);
+    h_hid_SixStates(&st, 1, &h);
+    CHECK(st.acc[0] == 0 && atomic_load(&g_net_btn[0]) == 0, "stream: the hub's players going away clear their buttons and six-axis");
+    dm_motion_clear_hid(0); dm_input_set(0, 0, 0, 0, 0); buttons_of(0, STYLE_FULLKEY); g_phone_mode = -1;
+}
+
 int main(void) {
     CHECK(setenv("DM_RUMBLE_LOG", "1", 1) == 0, "enable rumble diagnostics");
     t_slots();
@@ -494,6 +524,7 @@ int main(void) {
     t_motion_threads();
     t_motion_live();
     t_motion_hid();
+    t_net();
     t_rec();
     printf("hid players: %d checks, %d failed\n", checks, fails);
     return fails != 0;

@@ -34,6 +34,10 @@ void dm_motion_clear(int player);   // clears GameController motion; another fre
 // Kept separate from GameController and the phone; used while GameController supplies no fresh motion for that player. DM_MOTION_AXES / ACC_SIGN apply only to GameController.
 void dm_motion_set_hid(int player, const float acc[3], const float rot[3], uint64_t sample_ns);
 void dm_motion_clear_hid(int player);
+void dm_net_pad_set(int player, uint64_t buttons, int32_t lx, int32_t ly, int32_t rx, int32_t ry);
+void dm_net_pads(uint32_t mask);
+void dm_motion_set_net(int player, const float acc[3], const float rot[3], uint64_t sample_ns);
+void dm_motion_clear_net(int player);
 uint32_t dm_player_npad(int player);  // the npad id the game reads player p + 1 on: Handheld (0x20) or No1 (0) for player 1, No n (id n - 1) for player n
 
 // Optional diagnostic DM_HID_RECEIPT_LOG=<writable JSONL path>: received samples of real GetNpadState returns.
