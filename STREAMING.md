@@ -54,7 +54,7 @@ Next step: the test round with the user, item by item, from "Test list" below (d
 
 ## Test list
 
-One round with the user at the end, one item at a time (decided with the user, 2026-11-03). Every boot is 150 s, muted, through the guard, from a fresh copy of the agent's save, with the probe as the hub, one at a time; before the first boot the hub's agent session is asked to stop its builds and encodes, and told when the round ends. The hosts are one build for all items, `hosts/s3/dmhost` (`runs/hosts/s3` for Pokopia and Donkey Kong Bananza, `run2/hosts/s3` for Mario Kart World), built at 1994f5d6 (2026-11-04); rebuilt if more code lands before the round. Scripts: `/Volumes/Hangar/Games/overnight/stream/s3a_run.sh <game> <mode> s3` and `s3b_run.sh <game> <mode> s3`, read with `s3a_check.sh` / `s3b_check.sh <game> <mode> s3`.
+One round with the user at the end, one item at a time (decided with the user, 2026-11-03). Every boot is 150 s, muted, through the guard, from a fresh copy of the agent's save, with the probe as the hub, one at a time; before the first boot the agent session working on the hub is asked to stop its builds and encodes, and told when the round ends. The hosts are one build for all items, `hosts/s3/dmhost` (`runs/hosts/s3` for Pokopia and Donkey Kong Bananza, `run2/hosts/s3` for Mario Kart World), built at 1994f5d6 (2026-11-04); rebuilt if more code lands before the round. Scripts: `/Volumes/Hangar/Games/overnight/stream/s3a_run.sh <game> <mode> s3` and `s3b_run.sh <game> <mode> s3`, read with `s3a_check.sh` / `s3b_check.sh <game> <mode> s3`.
 
 | # | Item | Command | Passes when | Result |
 |---|---|---|---|---|
@@ -219,7 +219,7 @@ Known limits: a client that loses its decoder references (tvOS invalidates the s
   - ~~A hub that stops reading but keeps its socket open is never noticed.~~ Fixed (2026-11-04, commit 2b2e4942): a 5 s send deadline (`SO_SNDTIMEO`) closes the socket, which counts as a detach with pause while a client is attached; a hub stalled that long shows the TV nothing anyway.
   - ~~The hub is not told when ATTACH fails or when its size is replaced.~~ Fixed (2026-11-04, commits 64c81d27 and 1994f5d6): `ATTACH_RESULT`, type 7, agreed with the hub.
 
-#### Protocol v1 (reviewed by the hub, 2026-11-03)
+#### Protocol v1 (reviewed from the hub's side, 2026-11-03)
 
 The hub and dmhost run on the same Mac. The hub's side reviewed the draft on 2026-11-03; its changes are in: reconnection, a client-chosen codec, controllers connecting and their style, a DETACH that hands the game back to the Mac without pausing, a size limit and skipping unknown types.
 
