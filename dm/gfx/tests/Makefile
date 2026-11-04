@@ -212,6 +212,9 @@ t_geometry: t_geometry.m $(MTL_T_DEP)
 check_t_geometry: RUN_ENV = MTL_DEBUG_LAYER=1
 t_feedback: t_feedback.m $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_feedback.m $(MTL_T_SRC) $(FW)
+t_arena_args: t_arena_args.m $(MTL_T_DEP)
+	clang $(CFLAGS) -fobjc-arc -o $@ t_arena_args.m $(MTL_T_SRC) $(FW)
+check_t_arena_args: RUN_ENV = MTL_DEBUG_LAYER=1
 t_rast_discard: t_rast_discard.m $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_rast_discard.m $(MTL_T_SRC) $(FW)
 t_queue_origin: t_queue_origin.m $(MTL_T_DEP)
