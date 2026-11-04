@@ -12433,6 +12433,46 @@ static void present_gpu_note(double s, int fx) {
     MLOG("present command buffer GPU time over 600 presents %s: p50 %.3f ms, p95 %.3f ms, max %.3f ms", fx ? "through MetalFX" : "through the bilinear pass", a[299], a[569], a[599]);
     n[fx] = 0;
 }
+#if TARGET_OS_OSX
+int dm_stream_open(int *width, int *height); IOSurfaceRef dm_stream_surface(int i); int dm_stream_take(void); void dm_stream_put(int i, uint64_t ticket, uint64_t capture_ns, double pass_s, int drawn);
+static struct { id<MTLTexture> tex; id<MTL4CommandAllocator> al; id<MTL4CommandBuffer> cb; id<MTLBuffer> uv; } g_stream[8];
+static int g_stream_on = -1;
+static int stream_setup(void) {
+    int w = 0, h = 0, n = dm_stream_open(&w, &h);
+    if (n > 8) n = 8;
+    for (int i = 0; i < n; i++) {
+        MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm width:w height:h mipmapped:NO];
+        td.storageMode = MTLStorageModeShared; td.usage = MTLTextureUsageRenderTarget;
+        g_stream[i].tex = [g_dev newTextureWithDescriptor:td iosurface:dm_stream_surface(i) plane:0];
+        g_stream[i].al = [g_dev newCommandAllocator]; g_stream[i].cb = [g_dev newCommandBuffer];
+        g_stream[i].uv = [g_dev newBufferWithLength:sizeof(float) * 8 options:MTLResourceStorageModeShared];
+        if (!g_stream[i].tex || !g_stream[i].al || !g_stream[i].cb || !g_stream[i].uv) { MLOG("[RED] stream: cannot create the frame textures over the encoder's IOSurfaces (%dx%d)", w, h); return 0; }
+        g_stream[i].tex.label = @"stream frame";
+        res_add(g_stream[i].tex); res_add(g_stream[i].uv);
+    }
+    if (n) res_commit();
+    return n > 0;
+}
+static void stream_capture(id<MTLTexture> src, const int crop[4], uint64_t ticket) {
+    if (g_stream_on < 0) g_stream_on = stream_setup();
+    if (!g_stream_on) return;
+    int i = dm_stream_take();
+    if (i < 0) return;
+    uint64_t t0 = now_ns();
+    id<MTL4CommandBuffer> cb = g_stream[i].cb;
+    [g_stream[i].al reset];
+    [cb beginCommandBufferWithAllocator:g_stream[i].al];
+    int kind = present_encode_m4(cb, src, g_stream[i].tex, crop, g_stream[i].uv, NULL);
+    [cb endCommandBuffer];
+    if (!kind) { dm_stream_put(i, ticket, t0, 0, 0); return; }
+    MTL4CommitOptions *o = [MTL4CommitOptions new];
+    [o addFeedbackHandler:^(id<MTL4CommitFeedback> f) {
+        if (f.error) MLOG("[RED] stream frame command buffer error: %s", f.error.description.UTF8String);
+        dm_stream_put(i, ticket, t0, f.GPUEndTime - f.GPUStartTime, !f.error);
+    }];
+    [g_q4 commit:&cb count:1 options:o];
+}
+#endif
 static double g_link_it_tin;   // Enqueue time of the frame the display-link callback is presenting (read and written only on the display-link thread)
 static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t ticket, const int crop[4], id<CAMetalDrawable> supplied, double target_ts) {
     if (g_present_stall_ns) { struct timespec ts = {0, (long)g_present_stall_ns}; nanosleep(&ts, NULL); }
@@ -12485,6 +12525,9 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
     pthread_mutex_lock(&g_shotq_mu);
     for (int i = 0; i < g_nshotq;) if (g_present_n >= g_shotq[i].frame) { mtl_finish_gpu(); shot(src, g_shotq[i].path, 1, crop); g_shotq[i] = g_shotq[--g_nshotq]; } else i++;
     pthread_mutex_unlock(&g_shotq_mu);
+#if TARGET_OS_OSX
+    stream_capture(src, crop, ticket);
+#endif
 
     CAMetalLayer *layer = (__bridge CAMetalLayer *)front_metal_layer();
     if (!layer) return 0;

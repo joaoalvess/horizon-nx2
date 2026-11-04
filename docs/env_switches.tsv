@@ -283,6 +283,11 @@ DM_SLOWFRAME	diagnostic	`=1` writes the per-frame timing breakdown to the log on
 DM_SPIN	switch	`0` makes the rewriter's spin gate return at once, so guest poll loops spin with no sleep; the gate stays (on by default)
 DM_SPIN_LIST	diagnostic	`=1` makes `patch_nso.py` print every guest poll loop it found and sends through a spin gate
 DM_SPIN_POLL	switch	`=<µs>`: how long a spin-gate wait polls before it sleeps with the yield back-off (default 2000; `0` yields on every pass)
+DM_STREAM_CODEC	diagnostic	`hevc` makes the stream encoder (`DM_STREAM_FILE`) use HEVC instead of H.264
+DM_STREAM_FILE	path	`=<path>` turns on the stream encoder (Mac only): each present is drawn into an IOSurface and encoded with VideoToolbox's low-latency H.264, written to the file as Annex B, with a line per frame (capture pass, GPU, wait for the previous frame, encode and total times, size, sync, LTR token) in `<path>.tsv` and a `[stream]` line every 600 frames
+DM_STREAM_KBPS	diagnostic	`=<kbit/s>`: the stream encoder's average bitrate (default 25000)
+DM_STREAM_LTR	diagnostic	`0` turns off the stream encoder's long-term reference frames (on by default)
+DM_STREAM_SIZE	diagnostic	`=<W>x<H>`: the stream encoder's picture size (default 1920x1080; 64 to 4096, rounded down to even)
 DM_SVC	diagnostic	`=1` logs memory SVCs (`SetHeapSize`, `MapMemory`, `Map`/`UnmapPhysicalMemory`) with their addresses and sizes
 DM_SYMCHECK	diagnostic	`=1` checks every hashed module symbol lookup against a linear search and logs a red line for each mismatch
 DM_TBUF_ALIGN	diagnostic	`=<bytes>` uses that value as the linear-texture alignment for buffer textures when it is larger than the device's `minimumLinearTextureAlignmentForPixelFormat`: a Mac can then reproduce a phone's larger alignment (a 64-byte one fails the buffers a device with 64 bytes cannot view), to check `tbuf_as_2d`'s aligned-row copy
