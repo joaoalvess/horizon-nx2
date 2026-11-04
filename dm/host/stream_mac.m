@@ -505,6 +505,7 @@ static int st_write_all(int fd, const uint8_t *p, size_t n) {
     while (n) {
         ssize_t w = write(fd, p, n);
         if (w < 0 && errno == EINTR) continue;
+        if (w < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) { LOG("[RED] stream: the hub has read nothing for 5 s: closing its socket"); return 0; }
         if (w <= 0) return 0;
         p += w; n -= (size_t)w;
     }
@@ -563,6 +564,8 @@ static void *st_link(void *unused) {
         int one = 1, sndbuf = st_env("DM_STREAM_SNDBUF", 4 << 20);
         setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof one);
         if (setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof sndbuf)) LOG("[RED] stream: SO_SNDBUF %d refused (%s)", sndbuf, strerror(errno));
+        struct timeval deadline = {5, 0};
+        if (setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &deadline, sizeof deadline)) LOG("[RED] stream: SO_SNDTIMEO refused (%s)", strerror(errno));
         pthread_mutex_lock(&g_st_qmu); g_st_link_up = 1; g_st_link_broken = 0; g_st_until_refresh = 0; st_drop_queued(0); pthread_mutex_unlock(&g_st_qmu);
         atomic_store(&g_st_hub_hello, 0);
         LOG("[stream] connected to the hub at %s, %.2f s after the host started", g_st_path, (now_ns() - g_t0_ns) / 1e9);

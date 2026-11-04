@@ -279,6 +279,21 @@ int main(void) { @autoreleasepool {
     CHECK("dmhost connects again after the hub died", fd >= 0);
     if (fd >= 0) {
         hub_expect_hello(fd);
+        hub_send(fd, DMS_HELLO, 0, &v, 4);
+        hub_attach(fd, 1280, 720, 8000);
+        CHECK("ATTACH to the paused game after a reconnect starts the encoder", wait_until(encoder_on, 2000) && wait_until(resumed, 2000));
+        uint64_t t0 = now_ns();
+        for (int k = 0; k < 440; k++) capture_frames(busy[k & 1], 1, &ticket);
+        hub_msg m = {0};
+        int eof = 0; for (int k = 0; k < 2000 && !eof; k++) { int rr = hub_recv(fd, &m, 20); eof = rr < 0; free(m.p); m.p = NULL; }
+        CHECK("a hub that reads nothing for 5 s has its socket closed", eof && now_ns() - t0 >= 5000000000ull);
+        CHECK("a hub closed for not reading counts as a detach with pause", wait_until(suspended, 2000) && encoder_off());
+        close(fd);
+        fd = accept_within(lfd, 3000);
+        CHECK("dmhost connects again after closing a hub that did not read", fd >= 0);
+    }
+    if (fd >= 0) {
+        hub_expect_hello(fd);
         dms_header big = {DMS_MAX_PAYLOAD + 1, DMS_PAD, 0, now_ns()};
         write(fd, &big, sizeof big);
         hub_msg m = {0};
