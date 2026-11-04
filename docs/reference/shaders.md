@@ -1379,6 +1379,14 @@ Finding, keying and translating shaders (`dm/gfx/tools/shader_split.py`, `dmsh_b
 - **Fix:** the per-shader key covers the pairs, and a paired vertex shader's key also covers its pixel shaders' keys (`shader_key`, `pair_keyed`), so a change to a profile's pairs rebuilds what it affects ([Pixel shader inputs the vertex shader does not write](#pixel-shader-inputs-the-vertex-shader-does-not-write)).
 - **Found on:** [13 Sentinels: Aegis Rim](../../dm/games/01003FC01670C000/README.md).
 
+### Shader cache key missing helper modules
+
+- **Symptom:** an edit to a shader build helper reaches no library: `shader cache: hit` for every shader, and the old MSL is filed under the new chain version.
+- **Cause:** a cache hit restores a shader's outputs and skips `job_for` and `finish`, so everything they run has to be in the shader's key. `CODE_FP` left out `dmsh_ampere.py`, which `job_for` runs on every Switch 2 shader (`is_nvn2`, `c1_segment`, `inst_len`).
+- **Fix:** `CODE_FP` covers it. The modules that stay out of `CODE_FP` are made again from the restored MSL on every build (`dmsh_fetch.py`, `dmsh_vin.py`, `dmsh_pull.py`, `dmsh_alpha.py`, `dmsh_logic.py`, `dmsh_mesh.py`), or are covered otherwise (`dmsh_facts.py`: its row is in the key; `dmsh_mtlcache.py` changes no output).
+- **Found on:** no game: found reading the code. Upstream nxnative reproduced the same gap for `dmsh_wide.py` on [ANIMAL WELL](../../dm/games/010020D01AD24000/README.md) (an edit to `wide_loads` reached 0 of 46 libraries before the fix, all 46 after it).
+- **Check:** `test_dmsh_code_fp.py` `Coverage` fails when `dmsh_build.py` imports a `dmsh_*` module that neither list accounts for.
+
 ### Partial vertex builds missing paired pixel sources
 
 - **Symptom:** a full build reports successful shaders, but `metal-tt` rejects its pipeline archive with fragment inputs not written by the vertex shader. Fifteen cached vertices lacked default outputs in DRAGON QUEST I & II.
