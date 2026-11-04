@@ -27,6 +27,7 @@ struct MediaRun {
     var spacingNs: UInt64 = 20_000
     var frameIntervalNs: UInt64 = 16_666_667
     var lose: (inout SeededRandom, Int) -> Bool = { _, _ in false }
+    var unsent: Range<Int> = 0..<0
     var delivered: [ReceivedVideo] = []
     var nacks = 0
     var refreshes = 0
@@ -82,7 +83,7 @@ struct MediaRun {
             if produced < frames, now >= nextFrameAt {
                 if let sets = configure[produced] { sender.configure(sets) }
                 let packet = sender.packetize(frame(size: sizes(produced), sync: syncAt.contains(produced)))
-                if produced >= feedFrom { send(packet.data + packet.parity, at: now) }
+                if produced >= feedFrom, !unsent.contains(produced) { send(packet.data + packet.parity, at: now) }
                 produced += 1
                 nextFrameAt += frameIntervalNs
             }
@@ -148,6 +149,20 @@ struct MediaPlaneTests {
         }
         #expect(resumed?.isRefresh == true)
         #expect((numbers.last ?? 0) >= 118)
+    }
+
+    @Test func aGapLongerThanTheTrackedFramesResumesAtARefresh() {
+        var run = MediaRun()
+        run.unsent = 1..<99
+        run.run(frames: 160, sizes: { $0 == 0 ? 120_000 : 30_000 })
+        let numbers = run.delivered.map(\.envelope.frameNumber)
+        #expect(numbers.first == 1)
+        #expect(numbers == numbers.sorted())
+        let resumed = run.delivered.dropFirst().first
+        #expect(resumed?.isRefresh == true)
+        #expect((resumed?.envelope.frameNumber ?? 0) >= 100)
+        #expect((numbers.last ?? 0) >= 158)
+        #expect(run.receiver.stats.lostFrames > 64)
     }
 
     @Test func aNewConfigurationTravelsWithItsSyncFrame() {

@@ -174,6 +174,7 @@ public struct VideoReceiver: Sendable {
     private var waitingSince: UInt64?
     private var refreshOutstanding = false
     private var lastRefreshNs: UInt64 = 0
+    private static let trackedGap: UInt32 = 64
 
     public init(settings: VideoReceiverSettings = VideoReceiverSettings()) {
         self.settings = settings
@@ -197,11 +198,13 @@ public struct VideoReceiver: Sendable {
         if let newest {
             if VideoShards.precedes(newest, number) {
                 var missing = newest &+ 1
-                var count = 0
-                while missing != number, count < 64 {
+                if number &- missing > Self.trackedGap {
+                    missing = number &- Self.trackedGap
+                    outputs += skip(to: missing, now)
+                }
+                while missing != number {
                     if pending[missing] == nil, ready[missing] == nil { pending[missing] = Pending(firstNs: now, lastNs: now, seen: false) }
                     missing &+= 1
-                    count += 1
                 }
                 self.newest = number
                 let behind = pending.keys.filter { VideoShards.precedes($0, number) && pending[$0]?.nacks == 0 }
@@ -290,6 +293,23 @@ public struct VideoReceiver: Sendable {
         next = number &+ 1
         assembler.drop(framesBefore: number &+ 1)
         if state.flags & (VideoFlags.sync | VideoFlags.refresh) != 0 { refreshOutstanding = false }
+        if !needsRefresh {
+            needsRefresh = true
+            waitingSince = now
+        }
+        return requestRefresh(now)
+    }
+
+    private mutating func skip(to first: UInt32, _ now: UInt64) -> [Output] {
+        guard let head = next, VideoShards.precedes(head, first) else { return [] }
+        let dropped = UInt32(ready.keys.filter { VideoShards.precedes($0, first) }.count)
+        ready = ready.filter { !VideoShards.precedes($0.key, first) }
+        pending = pending.filter { !VideoShards.precedes($0.key, first) }
+        stats.droppedFrames += dropped
+        stats.lostFrames &+= (first &- head) &- dropped
+        next = first
+        assembler.drop(framesBefore: first)
+        refreshOutstanding = false
         if !needsRefresh {
             needsRefresh = true
             waitingSince = now
