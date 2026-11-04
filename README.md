@@ -72,18 +72,22 @@ Leaving out `--platform mac-app` packs an IPA for iPhone and iPad, but none of t
 
 ## Streaming to the Apple TV
 
-In progress. With `DM_STREAM=<socket path>` the Mac host becomes a stream source for a receiver on the same Mac ([`dm/host/stream_mac.m`](dm/host/stream_mac.m)):
+In progress. Three pieces of this repository put a game on the TV:
 
-- each presented frame is encoded with VideoToolbox's low-latency H.264 or HEVC encoder, in about 7 ms at 1080p on the Air;
-- the game's audio outputs are mixed into one stereo stream, and the Mac plays none while a client is attached;
-- the receiver sends controller input back, per player (buttons, sticks and motion), and can pause the game when the TV disconnects;
-- with a client attached, the host paces the game at 60 Hz on its own clock, so play does not depend on the Mac's window being visible or its display being awake.
+```
+ Apple TV                Mac
+ HorizonTV  ⇄  Wi-Fi  ⇄  HorizonHub  ⇄  local socket  ⇄  HorizonNX2 (dmhost), one per game
+```
 
-The encoder and the socket are measured on all three games. The controls, the pause and the pacing without the display are in the code and wait for their test round. The receiver, which carries the stream over the network to a tvOS player, is a separate piece still in progress; [`dm/tools/stream_probe`](dm/tools/stream_probe) stands in for it in tests. The protocol, the measurements and the stages are in [STREAMING.md](STREAMING.md).
+- **HorizonNX2**, the emulator: with `DM_STREAM=<socket path>` the Mac host becomes a stream source ([`dm/host/stream_mac.m`](dm/host/stream_mac.m)). Each presented frame is encoded with VideoToolbox's low-latency H.264 or HEVC encoder, in about 7 ms at 1080p on the Air. The game's audio outputs are mixed into one stereo stream, and the Mac plays none while a client is attached. Controller input comes back per player (buttons, sticks and motion), and the receiver can pause the game when it disconnects. With a client attached, the host paces the game at 60 Hz on its own clock, so play does not depend on the Mac's window being visible or its display being awake.
+- **HorizonHub**, a Mac menu bar app ([`apps/`](apps/README.md)): the profiles and the game catalog, opening one game at a time under the guard, pairing TVs, and the bridge from dmhost's socket to the network, encrypted and with forward error correction. It forwards bytes and never touches a pixel.
+- **HorizonTV**, the tvOS app: finds the hub, pairs with a code, lists the profiles and games, decodes the video, plays the sound and sends the controller.
+
+The encoder and the socket are measured on all three games. The controls, the pause, the pacing without the display, and the hub and TV over the home network are in the code and wait for their test round. [`dm/tools/stream_probe`](dm/tools/stream_probe) stands in for the hub in tests, `horizon-fakestream` for dmhost and `horizon-receiver` for the TV. The protocols, the measurements and the stages are in [STREAMING.md](STREAMING.md) and [apps/README.md](apps/README.md).
 
 ## Relationship to nxnative
 
-[nxnative](https://github.com/seedds/nxnative) runs more than a hundred Switch games on iPhone, iPad and Mac ([below](#games-nxnative-plays)). This fork narrows the target to the games above on a 16 GB MacBook Air with no fan, where heat, power and memory decide what plays, and adds what that needs: performance and memory work in the NVN-on-Metal layer and the host, and the streaming source. Upstream is merged by hand: only the changes that reach these games (the host, the graphics layers, the shader chain and the SDK services they call) are cherry-picked, and each game is booted again before they land.
+[nxnative](https://github.com/seedds/nxnative) runs more than a hundred Switch games on iPhone, iPad and Mac ([below](#games-nxnative-plays)). This fork narrows the target to the games above on a 16 GB MacBook Air with no fan, where heat, power and memory decide what plays, and adds what that needs: performance and memory work in the NVN-on-Metal layer and the host, and the streaming source with its Mac hub and Apple TV app. Upstream is merged by hand: only the changes that reach these games (the host, the graphics layers, the shader chain and the SDK services they call) are cherry-picked, and each game is booted again before they land.
 
 ## Acknowledgements
 

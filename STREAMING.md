@@ -1,4 +1,4 @@
-# Streaming a game to the Apple TV: the dmhost side
+# Streaming a game to the Apple TV
 
 The goal is to play the fork's games on the TV through the user's Apple TV 4K (3rd generation, 64 GB, Wi-Fi only):
 
@@ -6,10 +6,13 @@ The goal is to play the fork's games on the TV through the user's Apple TV 4K (3
 - a native tvOS app shows it with low latency, with sound and the controller;
 - the person picks the profile and the game on the TV.
 
-The work is split between two repositories:
+Three pieces in this repository do it:
 
-- **HangarVault** (`~/Developer/hangarvault`, `PLAN.md`, section "Jogos (J)", stages J1–J5) owns everything else: the hub (profiles, game catalog, starting and stopping dmhost with the guard's protection), all networking (Bonjour, pairing, encryption, UDP) and the tvOS app.
-- **This repository** owns dmhost's part. dmhost has no network code: it talks only to HangarVault over a local socket. Encoded video and audio go out; controller input and requests come in.
+- **HorizonNX2** (dmhost, `dm/`): runs the game, encodes each presented frame, mixes its sound and applies the controllers it is sent. It has no network code: it talks only to the hub over a local socket. Encoded video and audio go out; controller input and requests come in. Stages S1–S3 below.
+- **HorizonHub** (`apps/HorizonHub`, `apps/Sources/HubKit`): the Mac app that holds the profiles and the game catalog, starts and stops dmhost under the guard's protection, and does all the networking: Bonjour, pairing, encryption, UDP with forward error correction.
+- **HorizonTV** (`apps/HorizonTV`): the tvOS app. HorizonHub and HorizonTV share the protocol package `HorizonLink` and the player `HorizonPlayer`. Their layout, build and first start are in [apps/README.md](apps/README.md); the hub ⇄ TV protocol is [apps/LINK.md](apps/LINK.md).
+
+The hub and the tvOS app were first written in another of the user's repositories (HangarVault, stages J1–J5 of its plan) and moved here on 2026-11-04 (stage M), renamed and translated to English. Mentions of HangarVault below, from before the move, mean the hub.
 
 ## Status
 
@@ -19,6 +22,12 @@ The work is split between two repositories:
 | S2 | Local socket to HangarVault, with a probe tool for the hub's end | See "S2" below | done (2026-11-03): the probe received all three games' streams, socket hop p95 0.045-0.064 ms, every recorded `.h264` decodes whole with no frame-number gap, the stereo audio covers every attached stretch; frame time unchanged (Pokopia against a base run of the same day, the other two against S1); DETACH with pause, ATTACH again and a hub that dies mid-run checked on the games ("Found in S2" under S2); commits 805fb333 (audio) and 8ba7e691 (socket, probe) |
 | S3a | Pacing without the Mac display, focus arbitration between the window and the TV | See "S3" below | code done (2026-11-03): steps 1 and 3 in, unit tests pass, independent review taken; step 2 dropped with the user; commits 7538b30c (oe), 83e38af7 (stream), a5c2ea8f (window script); the boots of step 4 wait for the test round ("Test list") |
 | S3b | Network controller, pause on detach | See "S3" below | code done (2026-11-04): steps 1-4 in, unit tests pass, independent review taken ("S3b plan" under S3); commits ca9248bf (hid), 7f8f3587 (oe), bdfdb569 (stream), 17d47eb3 (probe); the boots wait for the test round ("Test list") |
+| J1 | Games on the Mac: catalog, profiles, opening and closing a game under the guard | Choosing a profile and a game opens it with that profile's save and nick (`fs mount save` in the profile's folder); a second game is refused; a GPU error closes the game, writes the block and shows it in the menu; Close ends with `graceful exit done` | code done in the earlier repository; the real-game checks wait for the hub and TV test round |
+| J2 | Network: Bonjour, pairing, the bridge from the local socket to UDP (FEC, acknowledgements, clock ping), a Mac test receiver | Paired, the receiver on the Pro shows the game; present to decoded p95 under 25 ms over Wi-Fi; simulated loss with no visible stall | code done; the Wi-Fi measurements wait for the test round |
+| J3 | tvOS app: profiles, games, opening through the hub, video and sound | On the TV, a profile opens a game on the Mac and it plays on the TV at 60 fps with sound | code done; builds for tvOS; install and checks wait for the test round |
+| J4 | Controller from the Apple TV, a combination for Home, pause and reconnection | 30 playable minutes end to end; leaving through the TV's Home and coming back resumes the game | code done; checks wait for the test round |
+| J5 | Polish: bit rate and resolution on screen, messages, docs | Set on reaching it | code done: resolution, rate, codec and button layout in the TV app, on-screen statistics, hub notices on the TV |
+| M | The hub and the tvOS app in this repository as HorizonHub and HorizonTV (`apps/`) | See [apps/README.md](apps/README.md#status) | done on branch `monorepo` (2026-11-04): 153 tests pass, both apps build, `horizon-fakestream` through `stream_probe` with no decode error and no gap; install and first run wait for the hub and TV test round |
 
 Order across both plans: J1 and S1 in parallel, then S2 → J2 → S3a → J3 → S3b → J4 → J5. The local socket protocol is written below before J2 starts.
 
@@ -66,6 +75,85 @@ One round with the user at the end, one item at a time (decided with the user, 2
 | 12 | S3b, Mario Kart World, pause and resume | `s3b_run.sh mkw pause s3` | as 11 | |
 | 13 | S3b, Donkey Kong Bananza, pause and resume | `s3b_run.sh dk pause s3` | as 11 | |
 | 14 | S3b, sound through a pause, with the user listening | `SOUND=1 s3b_run.sh pk pause s3` | the Mac stays silent while attached and while paused; the sound comes back after the DETACH without pause | |
+
+## Hub and TV test list
+
+The hub and the tvOS app pass their automatic tests (loopback, fakes and `stream_probe`). This round covers what only the home network, the Pro, the Apple TV and the real games can check, after the dmhost round above. **[user]** is the user's action, **[agent]** runs here, **[together]** is the user watching while the agent measures.
+
+Rules of the round:
+
+- Every game opening goes through `boot.lock`, one at a time. With a `STOP_*` file in `/Volumes/Hangar/Games/overnight/state`, nothing opens.
+- `horizon-fakestream` uses the same hardware encoder as dmhost: nothing is built during a measured boot.
+- Real games only with Donkey Kong Bananza and Mario Kart World, on the test profile with test saves. The agent does not open Pokopia, and the players' saves never enter a test.
+- The agent does not sign or install anything: signing, installing HorizonHub (`scripts/install_hub.sh`) and installing HorizonTV from Xcode are the user's.
+
+**1. The Mac app**
+
+| # | Step | Expected | Result |
+|---|---|---|---|
+| 1.1 | [user] `scripts/install_hub.sh` (with `apps/Config/Signing.local.xcconfig` in place), then the SSD password item ([apps/README.md](apps/README.md#install-and-first-start)) | HorizonHub opens; its TV section reads "Hub: Waiting for the TV on the network" | |
+| 1.2 | [user] Accept the Local Network prompt (or System Settings › Privacy & Security › Local Network) | HorizonHub is on in the list | |
+| 1.3 | [user] With the macOS firewall on, allow incoming connections to HorizonHub | no block | |
+| 1.4 | [user] Open the HorizonHub window with the SSD connected | the removable-volume prompt appears once and the catalog loads | |
+
+**2. A recorded game instead of a real one**
+
+`horizon-fakestream` stands in for dmhost: same `boot.lock`, same `DM_STREAM`, same peer check by the hub. It replays the S2 recordings (`dk_s2_play.h264`, `mkw_s2_play.h264`) in a loop.
+
+| # | Step | Expected | Result |
+|---|---|---|---|
+| 2.1 | [agent] `swift build -c release --product horizon-fakestream` in `apps/`; write `~/Library/Application Support/HorizonHub/games/fake-catalog.json`: the real guard state, the test profile with saves in a test folder, games "DK recorded" and "MKW recorded" whose `host` is the fakestream and whose `program` is the recording | the file loads | |
+| 2.2 | [agent] Reopen the app on it: `open --env HORIZON_GAMES_CATALOG=<file> ~/Applications/HorizonHub.app` | the window lists the two recorded games | |
+| 2.3 | [user] Open "DK recorded" from the Mac | the TV section reads "Game video: The game is connected" | |
+
+At the end, quit and open the app without `--env` to go back to the real catalog.
+
+**3. The receiver on the Pro** (a Wi-Fi client, as the TV will be; the agent runs it over SSH)
+
+| # | Step | Expected | Result |
+|---|---|---|---|
+| 3.1 | [agent] Copy `apps/` to `pro:scratch/horizon-bench/` (without `.build`), then `swift build -c release --product horizon-receiver` there | builds | |
+| 3.2 | [user] HorizonHub › TV › Pair a TV…; [agent] `horizon-receiver --seconds 120` on the Pro (it finds the Mac over Bonjour; its identity and known Macs are in `~/Library/Application Support/HorizonReceiver/`) | the terminal shows the code to type on the Mac | |
+| 3.3 | [user] Type the code on the Mac and confirm | the Pro appears among the paired TVs; the receiver gets video | |
+| 3.4 | [agent] Three runs of `horizon-receiver --headless --seconds 300 --tsv ~/hr/wifi-N.tsv` | each final summary has present to decoded p95 under 25 ms; an undecoded frame counts as over | |
+| 3.5 | [agent] `horizon-receiver --seconds 300 --tsv ~/hr/drop-1.tsv --drop media=0.01,feedback=0.01,burst=200x20,seed=7` | the longest run of undecoded frames is at most 3; repairs and refreshes show in the Mac's TV section | |
+| 3.6 | [together] `horizon-receiver --window --seconds 300 --png ~/hr/png --png-every 10` (needs the Pro's graphical session); the PNGs come back to the Air | the right picture, no green blocks or tearing; continuous sound | |
+| 3.7 | [user] Quit and reopen HorizonHub while the receiver runs | the receiver reconnects in a few seconds without pairing again | |
+| 3.8 | [user] Forget the Pro in the Mac's list | the receiver drops and asks to pair | |
+
+**4. The Apple TV with the recorded game**
+
+| # | Step | Expected | Result |
+|---|---|---|---|
+| 4.1 | [agent] `xcodegen generate` in `apps/`; [user] open `Horizon.xcodeproj`, pick the HorizonTV scheme and the Apple TV (paired in Settings › Remotes and Devices › Remote App and Devices), run | HorizonTV opens on the TV | |
+| 4.2 | [user] Accept the TV's local network prompt if it appears | the TV lists the Mac | |
+| 4.3 | [user] On the Mac: Pair a TV…; on the TV: pick the Mac, then Continue | the TV shows 6 digits; typed on the Mac, the TV goes to the catalog | |
+| 4.4 | [user] Quit and reopen the TV app | it goes straight to the paired Mac, with no new code | |
+| 4.5 | [user] Pick the profile and "DK recorded" | 60 fps video and sound; on-screen statistics (in the menu) show fps and latency | |
+| 4.6 | [user] Siri Remote: Menu during the game | the game menu opens without leaving the app; Menu again closes it | |
+| 4.7 | [user] Controller: hold + and − for 1 s | the game menu opens; the controller's B does not leave the game | |
+| 4.8 | [user] In the menu, change resolution, rate and codec | the video goes on after a moment; the statistics show the new size | |
+| 4.9 | [user] Back to the Mac | the TV goes back to the catalog and the game goes on on the Mac; the running game's entry resumes it on the TV | |
+| 4.10 | [user] The Siri Remote's TV button, wait 10 s, back to the app | the TV shows that it is coming back and the video returns by itself | |
+| 4.11 | [user] Turn the Mac's Wi-Fi off for 20 s (TCP gives up after ~11 s with no answer) | the TV shows that it is reconnecting and returns to the game | |
+| 4.12 | [user] 15 min without touching the controller | the screen saver does not start | |
+| 4.13 | [user] Close the game and confirm | the game closes on the Mac and the TV goes back to the catalog | |
+
+**5. Real games** (with the user's go and a window with no other boot; Donkey Kong Bananza and Mario Kart World, test profile, test saves)
+
+| # | Step | Expected | Result |
+|---|---|---|---|
+| 5.1 | [user] Open Donkey Kong Bananza from the Mac | the game's log has `fs mount save` in the profile's folder and the profile's nick; the window comes to the front with focus | |
+| 5.2 | [user] Close it from the Mac | the real dmhost ends and `boot.lock` is free | |
+| 5.3 | [user] Mario Kart World for 30 min (played or idle) | no GPU hang; if one happens, everything stops and the analysis is offline | |
+| 5.4 | [user] Donkey Kong Bananza from the TV with a controller | buttons by position (an Xbox controller's A is the Switch's B; "by letter" in the menu swaps them); sticks with a dead zone | |
+| 5.5 | [user] Mario Kart World from the TV with two controllers | the game sees two players; turning one controller off removes its player | |
+| 5.6 | [user] The TV button in the middle of a race, then back | the game pauses on the Mac (focus away, as the Switch's Home) and resumes on return | |
+| 5.7 | [user] 30 playable minutes end to end from the TV (J4's acceptance) | no noticeable stall; the hub's TSV is in `~/Library/Application Support/HorizonHub/games/stream-logs` | |
+
+Decisions for the user: the real profile names and nicks (`DM_NICK`) for the final catalog; Mario Kart World's 30 min played or idle; AWDL left alone unless Wi-Fi latency spikes of ~100 ms appear (then whether to turn AirDrop off during play); removing the test profile and saves after the checks.
+
+Known limits: a client that loses its decoder references (tvOS invalidates the session, or the decoder restarts) cannot decode an LTR refresh, so the TV and the receiver ask for the video again (ATTACH) after 2 s without a keyframe; asking for a keyframe directly needs a protocol change in dmhost. The Switch's Home has no path from the TV yet: `PAD` v1 has no bit for it, so + and − for 1 s opens the TV app's menu (back to the Mac, close the game). Pokopia takes 50–80 ms from present to encode until S3a's pacing changes that.
 
 ## Design
 
