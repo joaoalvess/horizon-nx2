@@ -25,7 +25,7 @@ Three pieces in this repository do it:
 | J3 | tvOS app: profiles, games, opening through the hub, video and sound | On the TV, a profile opens a game on the Mac and it plays on the TV at 60 fps with sound | code done; builds for tvOS; install and checks wait for the test round |
 | J4 | Controller from the Apple TV, a combination for Home, pause and reconnection | 30 playable minutes end to end; leaving through the TV's Home and coming back resumes the game | code done; checks wait for the test round |
 | J5 | Polish: bit rate and resolution on screen, messages, docs | Set on reaching it | code done: resolution, rate, codec and button layout in the TV app, on-screen statistics, hub notices on the TV |
-| M | The hub and the tvOS app in this repository as HorizonHub and HorizonTV (`apps/`) | See [apps/README.md](apps/README.md#status) | done on branch `monorepo` (2026-11-04): 153 tests pass, both apps build, `horizon-fakestream` through `stream_probe` with no decode error and no gap; install and first run wait for the hub and TV test round |
+| M | The hub and the tvOS app in this repository as HorizonHub and HorizonTV (`apps/`) | See [apps/README.md](apps/README.md#status) | done on branch `monorepo` (2026-11-04), in [pull request 1](https://github.com/joaoalvess/horizon-nx2/pull/1): 153 tests pass, both apps build, `horizon-fakestream` through `stream_probe` with no decode error and no gap; install and first run wait for the hub and TV test round |
 
 Order: J1 and S1 in parallel, then S2 → J2 → S3a → J3 → S3b → J4 → J5. The local socket protocol is written below before J2 starts.
 
