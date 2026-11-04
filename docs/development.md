@@ -362,9 +362,9 @@ python3 scripts/build_ipa_from_nsp.py ~/Games/MarioWonder -k ~/keys/prod.keys --
 python3 scripts/build_ipa_from_nsp.py ~/Games/MarioWonder -k ~/keys/prod.keys --platform mac-app --mac-sign "Developer ID Application: <name> (<team ID>)"
 ```
 
-`--platform` takes `ios` (the default: the IPA, or the Xcode project with `--prepare-xcode`), `mac` ([A Mac-only build for development](#a-mac-only-build-for-development)) and `mac-app` ([A Mac app](#a-mac-app)).
+`--platform` takes `ios` (the default: the IPA, or the Xcode project with `--prepare-xcode`), `mac` ([A Mac-only build for development](#a-mac-only-build-for-development)) and `mac-app` ([A Mac app](#a-mac-app)). With either Mac platform, `--seen-shaders` builds only the shaders a game's playtests used ([Building selected Mac shaders](#building-selected-mac-shaders)).
 
-In Spyder, open the script, fill in the settings at the top (`NSP_DIR`, `PROD_KEYS`, and optionally `PACKAGE`, `OUT_IPA`, `APP_NAME`, `BUNDLE_ID`, `LANGUAGE`, `KEEP_EXTRACTED`, `SHOW_FPS`, `MOTION`, `PSO_GPUS`, `PLATFORM`; for a game without a profile `HEAP_CHECK`, `HEAP_CHECK_SECS`, `PROVISIONAL`), and press F5. Empty paths are asked for at run time.
+In Spyder, open the script, fill in the settings at the top (`NSP_DIR`, `PROD_KEYS`, and optionally `PACKAGE`, `OUT_IPA`, `APP_NAME`, `BUNDLE_ID`, `LANGUAGE`, `KEEP_EXTRACTED`, `SHOW_FPS`, `MOTION`, `PSO_GPUS`, `PLATFORM`, `SEEN_SHADERS`; for a game without a profile `HEAP_CHECK`, `HEAP_CHECK_SECS`, `PROVISIONAL`), and press F5. Empty paths are asked for at run time.
 
 What the script does:
 0. Before it extracts anything it checks the environment (`check_prereqs`, `check_native_python`): the Python modules and tools (glslang too, which an OpenGL game needs), the iOS SDK for an iPhone build (a separate download in Xcode's Components), the Metal compiler, and the shader translator, which it starts once with `--source-sha`, so a translator that finds no .NET 10 runtime of its architecture (an Intel .NET on Apple silicon, a `DOTNET_ROOT` that names one) stops it here, not as an empty `xlate_source` at the shader step. A Python under Rosetta (an Intel Homebrew's) stops it too: the universal translator it starts runs as Intel code and finds no Intel .NET.
@@ -656,6 +656,44 @@ Notes on these steps:
 - `DM_SHOW_FPS=1` turns the frame-rate counter on (`DMShowFPS` in `Info.plist`, which `front_ios.m` reads; `DM_SHOW_FPS` in `Documents/env.txt` overrides it). It counts the frames put on screen each second (`mtl_present_count`), so frames the display link merges away are not counted.
 - The unsigned build pins its build product and intermediate directories inside `$W/build/ios/pkg/dd`, independently of Xcode's Locations preference.
 - hactool cannot read every update (Mario 1.2.1's patch NCA gives "Invalid BKTR layout!"), which is why `nx_extract` uses LibHac.
+
+### Building selected Mac shaders
+
+A full shader build takes hours for a game with a large map (Pokopia: 131,426 shaders, estimated at 11 hours), while play reaches far fewer. `--seen-shaders` (`SEEN_SHADERS = True`) with `--platform mac` or `mac-app` builds only the shaders a game's playtests used, for an NVN game whose profile lists them in `shader_seen.tsv` (Pokopia: 8,157 of them). Anything else stops with a message, and without the option the build stays the whole map, which then mentions the option for a game with a list.
+
+```sh
+python3 scripts/build_ipa_from_nsp.py "<NSP or dump folder>" --platform mac-app --seen-shaders
+```
+
+**The limit:** the rest of the map does not draw. The build says how many shaders it covers. An area the list does not cover logs `[RED] shader <key> (<stage>) failed to load` (or `failed to load shader <key>_b: cannot open`) and draws without that shader. Run the same command again to add those keys, or without `--seen-shaders` for the whole map.
+
+- **The keys** are the profile's list, the keys of the last partial build (`shader/partial-keys.txt`) and the keys the logs report missing: `~/Library/Logs/nxnative/<title ID>.log` and `.prev.log` for the app, `run/host.log` for `--platform mac`, whose printed run command keeps it. The file keeps what earlier runs added, since a shader that now loads no longer shows in a log, and a key outside the packed version's shader map is dropped. A key that still fails did not translate, and the build's summary (`logs/dmsh_build.log`) names it.
+- **The library** is `shader/partial/b-<chain>`, emptied first, with its own reuse key that includes the list. It shares the full build's cache (`DMSH_CAS`), so a stopped full build's work is reused here and this work by a later full build, which removes `shader/partial` when it finishes. A partial build leaves the full library, its key and the cache as they are: no pruning, no regression check against the last build.
+- **No stamp:** a partial library has no `inputs.tsv`, and none of the build's own `c1_full.tsv` or `cb_extent.tsv`. `c1_full.tsv` lists the shaders not proven safe, so beside a stamp a shader the partial build never saw would pass as proven. The host logs a red line for the missing stamp at each start and the game runs without the tables: every c1 gets its own 64 KiB.
+- **Pipelines:** `pso_offline.py` leaves out the pairs with no library. The host's probe of 16 pairs spread over the whole list skips those without a library, so it accepts this archive on what remains, though the archive holds only the bases of the listed shaders. If none of the 16 had its libraries, the probe would prove nothing and log that this system does not take the bases: the host then walks the pairs once, finds what the archive holds and leaves the rest to the draws. `--platform mac` keeps these bases in `run/pso_archive_partial`, as the prebuild's stamp does not name the library.
+
+By hand, `dmsh_build.py` (and `own_compilers.py`, which the NSP script runs) takes shader keys after its two folders and builds only those, each vertex shader with the pixel shaders paired with it; with no keys it builds the whole map. A key is column 4 of the profile's `shader_map.tsv`, and a new list goes in the profile as `shader_seen.tsv`, one key per line in the first column. For a game whose profile has no list yet, or to run the checkout's own `dm/host/dmhost`, stop the NSP script once it reaches the Mac shaders step: the build folder then holds the extracted RomFS, the rewritten modules (`patched_<version>`) and the shader package (`shader/pkg`). A partial library then runs through steps 4 and 5 of [Build by hand (Mac)](#build-by-hand-mac). From the repository root, for Pokopia:
+
+```sh
+py=python3   # the Python that runs the NSP script (make_ext_font.py needs its fonttools)
+repo="$PWD"; id=0400A3A01EE4C000; ver=v655360; build="<NSP or dump folder>/${id}_build"; out="$build/shader/partial"
+log="$build/run/host.log"   # the log of the last run (below), if there is one
+keys="$build/shader/partial-keys.txt"
+{ grep -hoE '^[0-9a-f]{16}' "dm/games/$id/shader_seen.tsv"
+  [ -f "$log" ] && sed -En -e 's/.*\[RED\] shader ([0-9a-f]{16}) \([^)]*\) failed to load:.*/\1/p' \
+    -e 's/.*\[RED\] failed to load shader ([0-9a-f]{16})_b: cannot open.*/\1/p' "$log"; } | sort -u > "$keys"
+DM_GAME=$id DMSH_TARGETS=mac DMSH_CAS="$build/shader/cache/cas" "$py" dm/gfx/tools/own_compilers.py "$build/shader/pkg" "$out" $(cat "$keys")
+make -C dm/host GAME=$id dmhost
+mkdir -p "$build/font" "$build/run/save" "$build/run/temp"
+"$py" dm/tools/make_ext_font.py "$build/font/nintendo_ext.ttf"
+(cd "$build/run" && DM_ROOT="$build" DM_ROMFS="$build/extract/$ver/RomFS.img" DM_SAVE="$build/run/save" DM_TEMP="$build/run/temp" DM_MSL_DIR="$out" \
+  DM_FONT_DIR="$build/font" DM_NVN_SHMAP="$repo/dm/games/$id/shader_map.tsv" DM_WINDOW=1 DM_AUDIO=1 "$repo/dm/host/dmhost" "$build/patched_$ver" 2>&1 | tee "$log")
+```
+
+- The keys go on the command line, not through `xargs`, which runs a command per 5,000 arguments on macOS.
+- Run the block again and it adds the keys from the last log. Unlike `--seen-shaders`, it keeps no key that only an earlier log named.
+- For another game, use its `shader_map.tsv` keys from a log alone (drop the `shader_seen.tsv` line); the first run then starts from an empty library.
+- `J` sets the shader workers (the NSP script uses the logical CPU count). Load average alone does not show the fastest setting: compare shaders per minute.
 
 ## Prewarm lists
 
