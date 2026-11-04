@@ -42,3 +42,6 @@ shader_note	Donkey Kong Bananza shaders
 # without the key, a clear-only rebinding of the composite target right after the composite draw wiped it before the upscaler read it, and every gameplay frame came out black
 render_cond	on
 enc_thread	on
+# Dynamic resolution and the present interval read the GPU time between the frame's timestamp reports (about 26 a frame): with one time for the whole submission they read about 0,
+# and the game kept 2304x1296 in its heavy areas. Each report takes its segment's GPU start / end, so the game can step down with its upscaler (upstream nxnative 12915a31: frame p50 50.2 -> 33.3 ms on an M1 Pro; not measured here yet)
+gpu_timestamps	segment
