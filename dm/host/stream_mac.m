@@ -63,6 +63,7 @@ void dm_app_suspend(int on);
 void dm_audio_suspend(int on);
 
 static int g_st_paused;
+static char g_st_why[160];
 static _Atomic uint64_t g_st_pad_ns[DM_PLAYERS];
 static pthread_mutex_t g_st_pad_mu = PTHREAD_MUTEX_INITIALIZER;
 static dispatch_source_t g_st_pad_timer;
@@ -334,7 +335,7 @@ static int st_start(int w, int h, int hevc, int kbps) {
     VTCompressionSessionRef vt = NULL;
     OSStatus s = VTCompressionSessionCreate(NULL, w, h, hevc ? kCMVideoCodecType_HEVC : kCMVideoCodecType_H264, (__bridge CFDictionaryRef)spec,
                                             (__bridge CFDictionaryRef)source, NULL, st_encoded, NULL, &vt);
-    if (s) { LOG("[RED] stream: no low-latency hardware %s encoder (%d)", hevc ? "HEVC" : "H.264", (int)s); return 0; }
+    if (s) { snprintf(g_st_why, sizeof g_st_why, "no low-latency hardware %s encoder (%d)", hevc ? "HEVC" : "H.264", (int)s); LOG("[RED] stream: %s", g_st_why); return 0; }
     st_prop(vt, kVTCompressionPropertyKey_RealTime, kCFBooleanTrue);
     st_prop(vt, kVTCompressionPropertyKey_AllowFrameReordering, kCFBooleanFalse);
     st_prop(vt, kVTCompressionPropertyKey_ExpectedFrameRate, (__bridge CFNumberRef)@60);
@@ -348,7 +349,7 @@ static int st_start(int w, int h, int hevc, int kbps) {
     CVPixelBufferRef px[ST_SLOTS] = {0};
     for (int i = 0; i < ST_SLOTS; i++) {
         if (CVPixelBufferCreate(NULL, w, h, kCVPixelFormatType_32BGRA, (__bridge CFDictionaryRef)source, &px[i]) || !CVPixelBufferGetIOSurface(px[i])) {
-            LOG("[RED] stream: cannot create the IOSurface pixel buffers (%dx%d)", w, h);
+            snprintf(g_st_why, sizeof g_st_why, "cannot create the IOSurface pixel buffers (%dx%d)", w, h); LOG("[RED] stream: %s", g_st_why);
             for (int k = 0; k <= i; k++) if (px[k]) CVPixelBufferRelease(px[k]);
             VTCompressionSessionInvalidate(vt); CFRelease(vt);
             return 0;
@@ -374,11 +375,19 @@ static void st_client(int on) {
     mtl_stream_pace(on || g_st_paused);
 }
 
+static void st_attach_result(int ok, int w, int h, uint32_t codec, const char *why) {
+    uint8_t p[12 + sizeof g_st_why], *w8 = p;
+    dms_put8(&w8, (uint8_t)ok); dms_put8(&w8, 0); dms_put16(&w8, (uint16_t)w); dms_put16(&w8, (uint16_t)h); dms_put16(&w8, 0); dms_put32(&w8, codec);
+    size_t n = why ? strnlen(why, sizeof g_st_why) : 0;
+    if (n) dms_put(&w8, why, n);
+    st_send_control(DMS_ATTACH_RESULT, 0, p, (size_t)(w8 - p));
+}
+
 static void st_restart(void) {
     LOG("[RED] stream: VideoToolbox invalidated the encoder session: making it again at %dx%d, %d kbit/s", g_st_w, g_st_h, g_st_kbps);
     int ok = st_start(g_st_w, g_st_h, g_st_hevc, g_st_kbps);
     pthread_mutex_lock(&g_st_qmu); g_st_qgen = ok ? g_st_gen : 0; st_drop_queued(1); pthread_mutex_unlock(&g_st_qmu);
-    if (!ok) { atomic_store(&g_st_sending, 0); st_client(0); }
+    if (!ok) { st_attach_result(0, g_st_w, g_st_h, g_st_hevc ? DMS_HVC1 : DMS_AVC1, g_st_why); atomic_store(&g_st_sending, 0); st_client(0); }
 }
 
 static void st_detach(int pause, const char *why) {
@@ -399,9 +408,10 @@ static void st_detach(int pause, const char *why) {
     if (resume) { dm_app_suspend(0); dm_focus_stream(0); LOG("[stream] %s: the paused game goes on at the Mac", why); }
 }
 
-static void st_attach(int w, int h, uint32_t codec, int kbps, int hz) {
+static void st_attach(int w, int h, uint32_t codec, int kbps, int hz, NSString *note) {
     dispatch_async(g_st_encq, ^{
         int was = g_st_attached, ok = st_start(w, h, codec == DMS_HVC1, kbps);
+        st_attach_result(ok, w, h, codec, ok ? note.UTF8String : g_st_why);
         pthread_mutex_lock(&g_st_qmu); g_st_qgen = ok ? g_st_gen : 0; st_drop_queued(1); pthread_mutex_unlock(&g_st_qmu);
         if (!ok) { atomic_store(&g_st_sending, 0); st_client(0); return; }
         atomic_store(&g_st_sending, 1);
@@ -427,12 +437,16 @@ static int st_hub_message(const dms_header *h, uint8_t *p, uint32_t n) {
     case DMS_ATTACH: {
         int hz = dms_get16(&r), w = dms_get16(&r), hh = dms_get16(&r); dms_get16(&r);
         uint32_t codec = dms_get32(&r); int kbps = (int)dms_get32(&r);
-        if (r.bad) { LOG("[RED] stream: a short ATTACH from the hub (%u bytes), ignored", n); return 1; }
-        if (!atomic_load(&g_st_hub_hello)) { LOG("[RED] stream: ATTACH before the hub's HELLO, ignored"); return 1; }
-        if (codec != DMS_AVC1 && codec != DMS_HVC1) { LOG("[RED] stream: ATTACH asks for codec %#x, which HELLO did not list: ignored", codec); return 1; }
-        if (w < 64 || hh < 64 || w > 4096 || hh > 4096) { LOG("[RED] stream: ATTACH asks for %dx%d (64 to 4096): using 1920x1080", w, hh); w = 1920; hh = 1080; }
+        if (r.bad) { LOG("[RED] stream: a short ATTACH from the hub (%u bytes), ignored", n); st_attach_result(0, 0, 0, 0, "a short ATTACH"); return 1; }
+        if (!atomic_load(&g_st_hub_hello)) { LOG("[RED] stream: ATTACH before the hub's HELLO, ignored"); st_attach_result(0, w, hh, codec, "ATTACH before the hub's HELLO"); return 1; }
+        if (codec != DMS_AVC1 && codec != DMS_HVC1) { LOG("[RED] stream: ATTACH asks for codec %#x, which HELLO did not list: ignored", codec); st_attach_result(0, w, hh, codec, "a codec HELLO did not list"); return 1; }
+        NSString *note = nil;
+        if (w < 64 || hh < 64 || w > 4096 || hh > 4096) {
+            LOG("[RED] stream: ATTACH asks for %dx%d (64 to 4096): using 1920x1080", w, hh);
+            note = [NSString stringWithFormat:@"the size asked for, %dx%d, is outside 64 to 4096: 1920x1080 instead", w, hh]; w = 1920; hh = 1080;
+        } else if ((w | hh) & 1) note = [NSString stringWithFormat:@"the size asked for, %dx%d, is rounded down to even numbers", w, hh];
         if (kbps <= 0) kbps = 25000;
-        st_attach(w & ~1, hh & ~1, codec, kbps, hz);
+        st_attach(w & ~1, hh & ~1, codec, kbps, hz, note);
         return 1;
     }
     case DMS_DETACH:

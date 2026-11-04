@@ -10,7 +10,7 @@ static int checks, failed;
 #define CHECK(label, c) do { checks++; if (!(c)) { failed++; fprintf(stderr, "FAIL: %s\n", label); } } while (0)
 
 typedef struct { dms_header h; uint8_t *p; uint64_t recv_ns; } hub_msg;
-typedef struct { int frames, configs, sync, refresh, gaps, gap_without_fresh, tokens, bad_avcc, other; uint64_t last_seq, max_hop_ns; long long first_token; int have_seq, first_is_config, first_frame_sync, seen; } st_tally;
+typedef struct { int frames, configs, sync, refresh, gaps, gap_without_fresh, tokens, bad_avcc, other, results, result_ok, result_w, result_h; uint64_t last_seq, max_hop_ns; long long first_token; int have_seq, first_is_config, first_frame_sync, seen; char result_why[160]; } st_tally;
 
 static int listen_at(const char *path) {
     unlink(path);
@@ -52,6 +52,13 @@ static int hub_recv(int fd, hub_msg *m, int ms) {
 }
 
 static void tally_msg(st_tally *t, const hub_msg *m) {
+    if (m->h.type == DMS_ATTACH_RESULT) {
+        dms_reader r = {m->p, m->p + m->h.length, 0};
+        t->results++; t->result_ok = dms_get8(&r); dms_get8(&r); t->result_w = dms_get16(&r); t->result_h = dms_get16(&r); dms_get16(&r); dms_get32(&r);
+        size_t n = r.bad ? 0 : (size_t)(r.end - r.p); if (n >= sizeof t->result_why) n = sizeof t->result_why - 1;
+        memcpy(t->result_why, r.p, n); t->result_why[n] = 0;
+        return;
+    }
     if (!t->seen++) t->first_is_config = m->h.type == DMS_VIDEO_CONFIG;
     if (m->h.type == DMS_VIDEO_CONFIG) { t->configs++; return; }
     if (m->h.type != DMS_VIDEO_FRAME) { t->other++; return; }
@@ -172,6 +179,7 @@ int main(void) { @autoreleasepool {
     CHECK("every present reaches the hub", t.frames == 30);
     CHECK("the parameter sets come first", t.first_is_config && t.configs >= 1);
     CHECK("the first frame is a sync frame", t.first_frame_sync);
+    CHECK("ATTACH_RESULT says the encoder started at the size asked for", t.results == 1 && t.result_ok == 1 && t.result_w == 1280 && t.result_h == 720 && !t.result_why[0]);
     CHECK("frame numbers follow each other", t.gaps == 0);
     CHECK("frames are AVCC with 4-byte lengths", t.bad_avcc == 0);
     CHECK("the socket hop stays under 20 ms", t.max_hop_ns < 20000000ull);
@@ -250,6 +258,9 @@ int main(void) { @autoreleasepool {
     CHECK("ATTACH resumes the paused game", wait_until(resumed, 2000) && encoder_on());
     CHECK("the resumed game is in focus for the client", rec_focus == 1);
     CHECK("the tap takes the sound before the game resumes", rec_tap_on_at < rec_resume_at);
+    st_tally rs = {0};
+    hub_drain(fd, &rs, 0, 300);
+    CHECK("the ATTACH that resumes a paused game gets an ATTACH_RESULT too", rs.results == 1 && rs.result_ok == 1);
     hub_send(fd, DMS_DETACH, DMS_DETACH_PAUSE, NULL, 0);
     CHECK("DETACH with pause suspends the game again", wait_until(suspended, 2000));
     hub_send(fd, DMS_DETACH, 0, NULL, 0);
@@ -260,6 +271,21 @@ int main(void) { @autoreleasepool {
     st_tally a3 = {0};
     capture_frames(flat, 5, &ticket);
     hub_drain(fd, &a3, 5, 2000);
+    uint8_t bad[16] = {0}, *bw = bad; dms_put16(&bw, 60); dms_put16(&bw, 1280); dms_put16(&bw, 720); dms_put16(&bw, 0); dms_put32(&bw, 0x76703039u); dms_put32(&bw, 8000);
+    hub_send(fd, DMS_ATTACH, 0, bad, sizeof bad);
+    st_tally rb = {0};
+    hub_drain(fd, &rb, 0, 300);
+    CHECK("an ATTACH with a codec HELLO did not list gets ATTACH_RESULT ok 0 with the reason", rb.results == 1 && rb.result_ok == 0 && strstr(rb.result_why, "codec"));
+    hub_attach(fd, 5000, 720, 8000);
+    CHECK("an ATTACH of a size out of range starts the encoder", wait_until(encoder_on, 2000));
+    st_tally ro = {0};
+    capture_reading(fd, &ro, flat, 3, &ticket);
+    hub_drain(fd, &ro, 0, 300);
+    CHECK("ATTACH_RESULT gives the size used and why it changed", ro.results == 1 && ro.result_ok == 1 && ro.result_w == 1920 && ro.result_h == 1080 && strstr(ro.result_why, "5000x720"));
+    hub_attach(fd, 1280, 720, 8000);
+    CHECK("an ATTACH at the size asked for starts the encoder again", wait_until(encoder_on, 2000));
+    capture_reading(fd, &ro, flat, 3, &ticket);
+    hub_drain(fd, &ro, 0, 300);
     uint32_t gen_before = g_st_gen;
     dispatch_sync(g_st_encq, ^{ VTCompressionSessionInvalidate(g_st_vt); });
     st_tally inv = {0};
