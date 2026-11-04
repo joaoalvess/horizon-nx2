@@ -1,6 +1,6 @@
 # HorizonHub and HorizonTV
 
-The two apps that put HorizonNX2's games on the TV. HorizonNX2 (the emulator, `dm/` at the repository root) runs the game on the Mac and encodes its frames; it has no network code. HorizonHub runs on the Mac, opens and closes the games and carries their stream over the home network; HorizonTV plays it on an Apple TV and sends the controller back.
+The two apps that put HorizonNX2's games on the TV. HorizonNX2's host, dmhost (`dm/` at the repository root), runs the game on the Mac and encodes its frames; it has no network code. HorizonHub runs on the Mac, opens and closes the games and carries their stream over the home network; HorizonTV plays it on an Apple TV and sends the controller back.
 
 ```
  Apple TV                    Mac
@@ -36,7 +36,7 @@ swift build
 swift test
 ```
 
-With the Hangar SSD mounted, one `HubKitTests` test also runs the guard (`/Volumes/Hangar/Games/overnight/guard.py`) on a state folder of its own; `HorizonPlayerTests` need the Mac's hardware HEVC decoder.
+With the Hangar SSD mounted, two `HubKitTests` tests also run the guard (`/Volumes/Hangar/Games/overnight/guard.py`) on a state folder of their own, with `/usr/bin/true` as the game; `decodesHEVC` runs only on a Mac with a hardware HEVC decoder.
 
 The apps are built from an Xcode project that XcodeGen writes from [`project.yml`](project.yml):
 
@@ -52,7 +52,7 @@ Signing stays out of the repository: copy `Config/Signing.local.xcconfig.example
 
 ## Install and first start
 
-1. `scripts/install_hub.sh` builds HorizonHub in Release, quits the running one, installs it in `~/Applications` and opens it.
+1. `scripts/install_hub.sh` builds HorizonHub in Release, quits the running one, installs it in `~/Applications` (`HORIZON_HUB_APP_DIR` names another folder) and opens it. It stops while the running hub has a game open: close the game first, since quitting the hub closes it.
 2. Store the Hangar SSD's password for the hub, trusted by the app so it unlocks the SSD without asking:
 
    ```
@@ -63,7 +63,7 @@ Signing stays out of the repository: copy `Config/Signing.local.xcconfig.example
 4. Install HorizonTV on the Apple TV from Xcode (scheme HorizonTV, the Apple TV as destination), then pair it: HorizonHub › TV › Pair a TV…, and type the code the TV shows. The hub has a new identity, so a TV paired with an earlier hub pairs again.
 5. Turn on Open at Login in the menu bar menu once the app sits in `~/Applications`.
 
-HorizonHub keeps its settings and paired TVs in `~/Library/Application Support/HorizonHub`, its identity in the keychain (service `dev.joaoalvess.horizon.hub`), and reads the catalog from `/Volumes/Hangar/Games/hangar-games.json` (`HORIZON_GAMES_CATALOG` names another).
+HorizonHub keeps its files in `~/Library/Application Support/HorizonHub/games`: the paired TVs (`clients.json`), the catalog's last copy (`catalog.json`), the running game (`session.json`), dmhost's socket (`stream.sock`) and the stream logs (`stream-logs/`). Its identity is in the keychain (service `dev.joaoalvess.horizon.hub`, account `link-identity`), and it reads the catalog from `/Volumes/Hangar/Games/hangar-games.json` (`HORIZON_GAMES_CATALOG` names another).
 
 ## Status
 
