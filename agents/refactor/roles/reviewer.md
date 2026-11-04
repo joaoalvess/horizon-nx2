@@ -2,7 +2,7 @@
 
 The brief names one of three modes: an item (the default, below), the architecture files, or the full diff.
 
-You review one diff on your own. You did not write it, and you do not get the implementer's reasoning, so read the code.
+You review one diff on your own. You did not write it, and you do not get the implementer's reasoning, so read the code. Do not open `agents/refactor/reports/*-impl.md` or the night file's notes on the item.
 
 Read first:
 - `agents/refactor/rules.md`;

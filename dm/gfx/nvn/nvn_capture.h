@@ -20,7 +20,7 @@
 enum {
     CAP_HEAD = CAP_TAG('H', 'E', 'A', 'D'),   // text: key \t value lines (chain, commit, title, build, frame, DM_* settings, format)
     CAP_LAYT = CAP_TAG('L', 'A', 'Y', 'T'),   // text: the record layout fingerprint (cap_layout); a replayer built against another nvn_obj.h refuses the capture
-    CAP_STAT = CAP_TAG('S', 'T', 'A', 'T'),   // text: replay-layer state set outside records (texture pool size, origin, depth mode)
+    CAP_STAT = CAP_TAG('S', 'T', 'A', 'T'),   // text: replay-layer state set outside records (texture pool size, origin, depth mode, the Switch 2 flag and GOB order)
     CAP_REGN = CAP_TAG('R', 'E', 'G', 'N'),   // one memory region: cap_regn + its bytes
     CAP_PADD = CAP_TAG('P', 'A', 'D', 'D'),   // the replay layer's pool list (mtl_pool_add calls): cap_padd[]
     CAP_PDIF = CAP_TAG('P', 'D', 'I', 'F'),   // region bytes that changed before submit k: {u32 region, u32 0, u64 off, u64 len, bytes}...

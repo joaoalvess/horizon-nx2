@@ -3,7 +3,7 @@
 // from the frame before (texture readback), pool bytes the CPU wrote before the first submit and between the two submits (regions, block changes), a copy from a pool
 // into the target and a buffer fill (relocated addresses), a call into a second segment, a texture object outside the records, a combined program the replay
 // layer makes for itself (its serial must not be a captured one) and a registered texture whose memory pool was finalized.
-//   ./t_capture_live <capture path>
+//   ./t_capture_live <capture path> [sdk built for the Switch 2: 0|1]
 #import <Foundation/Foundation.h>
 #define nvn_game_fps nvn_game_fps_mtl_default
 #include "../nvn/nvn_mtl.m"
@@ -18,6 +18,7 @@ module_t *g_mod; int g_nmod;
 void svc_thread_dump(void) {}
 uint64_t now_ns(void) { return bp_now(); }
 void crash_install(void);   // host crash.c: the fault handler that also takes the dirty tracker's write faults on pool pages (nvn_dirty.c)
+extern int g_sdk_ounce;
 
 typedef struct { uint8_t p[4096]; size_t n; } chain;
 static void *emit(chain *c, unsigned op, size_t n) {
@@ -35,7 +36,9 @@ static void copy_block(chain *c, const tex_t *t, uint64_t src, int x, int y) {
 
 int main(int argc, char **argv) { @autoreleasepool {
     crash_install();   // the CPU writes pool pages the dirty tracker protects, as in the host
-    if (argc != 2) { fprintf(stderr, "usage: %s <capture path>\n", argv[0]); return 2; }
+    if (argc < 2 || argc > 3) { fprintf(stderr, "usage: %s <capture path> [sdk built for the Switch 2: 0|1]\n", argv[0]); return 2; }
+    g_sdk_ounce = argc > 2 && atoi(argv[2]); nvn_gob_switch2 = dm_sdk_ounce();
+    if (nvn_gob_switch2 != g_sdk_ounce) { fprintf(stderr, "[RED] dm_sdk_ounce() is not sdk_ounce.c's\n"); return 2; }
     char env[1200]; snprintf(env, sizeof env, "2:1:%s", argv[1]); setenv("DM_NVN_CAPTURE", env, 1);
     // the programs below have no stages, but resolving one loads the shader map: an empty one beside the capture (the capture's header carries it to the replayer)
     char shmap[1200]; snprintf(shmap, sizeof shmap, "%s.shmap.tsv", argv[1]); FILE *sf = fopen(shmap, "w"); if (!sf) return 2; fclose(sf); setenv("DM_NVN_SHMAP", shmap, 1);
@@ -48,6 +51,10 @@ int main(int argc, char **argv) { @autoreleasepool {
     tex_t at = {.magic = MAGIC('T', 'E', 'X', 0), .serial = nvn_new_serial()};
     at.d = (nvn_texdesc){.target = NVN_TEXTURE_TARGET_2D, .format = NVN_FORMAT_RGBA_ASTC_8x8_SRGB, .width = 16, .height = 16, .depth = 1, .levels = 3, .samples = 1};
     nvn_tex_layout(&at.d, &at.L); mtl_tex_init(&at);
+    tex_t ct = {.magic = MAGIC('T', 'E', 'X', 0), .serial = nvn_new_serial(), .mem = pool + 0x3c000};
+    ct.d = (nvn_texdesc){.target = NVN_TEXTURE_TARGET_2D, .format = NVN_FORMAT_RGBA8, .width = 16, .height = 16, .depth = 1, .levels = 1, .samples = 1};
+    nvn_tex_layout(&ct.d, &ct.L); mtl_tex_init(&ct); mtl_tex_cpu_written(&ct);
+    for (uint64_t i = 0; i < ct.L.size; i++) pool[0x3c000 + i] = (uint8_t)(i * 37 + 11);
     chain sub = {{0}, 0}; p_clear_buf *cb = emit(&sub, OP_CLEAR_BUF, sizeof *cb); *cb = (p_clear_buf){(uint64_t)(uintptr_t)pool + 0x30000, 0x400, 0x11223344, 0}; emit(&sub, OP_END, 0);
     // frame 1: the target cleared red, with a gradient block copied in (the content frame 2 starts from)
     for (int i = 0; i < 16 * 16; i++) { pool[4 * i] = (uint8_t)i; pool[4 * i + 1] = (uint8_t)(255 - i); pool[4 * i + 2] = 7; pool[4 * i + 3] = 255; }
@@ -77,6 +84,7 @@ int main(int argc, char **argv) { @autoreleasepool {
     { p_bind_program *p = emit(&a, OP_BIND_PROGRAM, sizeof *p); *p = (p_bind_program){&pf, 0x2}; }
     { p_set_rt *r = emit(&a, OP_SET_RT, sizeof *r); r->n = 1; r->color[0] = &rt; }
     copy_block(&a, &rt, (uint64_t)(uintptr_t)pool + 0x10000, 32, 8);
+    { p_copy_t2t *o = emit(&a, OP_COPY_T2T, sizeof *o); o->src = &ct; o->dst = &rt; o->sr = (NVNcopyRegion){0, 0, 0, 16, 16, 1}; o->dr = (NVNcopyRegion){40, 24, 0, 16, 16, 1}; }
     { uint64_t *c = emit(&a, OP_CALL, 8); *c = (uint64_t)(uintptr_t)sub.p; }
     { p_copy_b2t *o = emit(&a, OP_COPY_T2B, sizeof *o); o->src = (uint64_t)(uintptr_t)pool + 0x38000; o->tex = &at; o->r = (NVNcopyRegion){0, 0, 0, 16, 16, 1}; }
     { p_copy_b2t *o = emit(&a, OP_COPY_B2T, sizeof *o); o->src = (uint64_t)(uintptr_t)pool + 0x38000; o->tex = &rt; o->r = (NVNcopyRegion){48, 48, 0, 4, 4, 1}; }

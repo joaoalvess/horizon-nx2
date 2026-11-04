@@ -2,11 +2,11 @@
 // the one the live run took. Built like the gfx tests, which include nvn_mtl.m (and hle_nvn.c) in one translation unit: the replayer reaches the replay layer's own tables
 // and the host's pool / program / descriptor-pool side tables without any entry point added to them for it.
 //   make -C dm/gfx/tests GAME=<id> nvn_replay
-//   ./nvn_replay <capture> [--repeat n] [--max-pixels n] [--warm n] [--png path] [--texdump dir] [--writes] [--made]
+//   ./nvn_replay <capture> [--repeat n] [--max-pixels n] [--warm n] [--png path] [--texdump dir] [--sdk-ounce 0|1] [--writes] [--made]
 // --repeat n: n replays, each in a fresh process; --warm n: n replays in one process, each after the one before (the replay layer keeps its state; see docs/development.md)
 // --max-pixels n: a replay whose frame differs from the live one in at most n pixels still counts as a match (the replay noise of the game's frame; default 0, bit for bit)
 // Exit status: 0 the replayed frame equals the live one (within --max-pixels), 1 it differs, 2 the capture cannot be replayed by this build (another game, record layout or shader
-// interface, a corrupt file): a [RED] line says which.
+// interface, a corrupt file, no Switch 2 flag in the capture and no --sdk-ounce, or one that contradicts it): a [RED] line says which.
 #import <Foundation/Foundation.h>
 #include <spawn.h>
 #include <sys/wait.h>
@@ -24,6 +24,7 @@ module_t *g_mod; int g_nmod;
 void svc_thread_dump(void) {}
 uint64_t now_ns(void) { return bp_now(); }
 void crash_install(void);   // host crash.c: the fault handler that also takes the dirty tracker's write faults on pool pages (nvn_dirty.c)
+extern int g_sdk_ounce;
 
 #define RFAIL(...) do { fprintf(stderr, "[RED] nvn_replay: " __VA_ARGS__); fputc('\n', stderr); exit(2); } while (0)
 typedef struct { cap_chunk c; uint8_t *d; } chunk;
@@ -186,7 +187,7 @@ static void check_programs(const char *cap_chain) {   // every program resolves 
 }
 
 int main(int argc, char **argv) { @autoreleasepool {
-    const char *path = NULL, *png = NULL, *tdir = NULL, *maxpx_arg = "0"; int repeat = 1, warm = 1, index = 1;
+    const char *path = NULL, *png = NULL, *tdir = NULL, *maxpx_arg = "0", *ounce_arg = NULL; int repeat = 1, warm = 1, index = 1;
     setvbuf(stdout, NULL, _IOLBF, 0); crash_install();   // pool pages the replay writes may be write-protected by the dirty tracker, as in the host
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--repeat") && i + 1 < argc) repeat = MAX(1, atoi(argv[++i]));
@@ -195,12 +196,13 @@ int main(int argc, char **argv) { @autoreleasepool {
         else if (!strcmp(argv[i], "--texdump") && i + 1 < argc) tdir = argv[++i];   // every colour target of each replay as <dir>/r<n>_<serial*100+level>.png (DM_NVN_TEXDUMP), to compare replays target by target
         else if (!strcmp(argv[i], "--warm") && i + 1 < argc) warm = MAX(1, atoi(argv[++i]));
         else if (!strcmp(argv[i], "--index") && i + 1 < argc) index = MAX(1, atoi(argv[++i]));   // (the n-th fresh replay of --repeat)
+        else if (!strcmp(argv[i], "--sdk-ounce") && i + 1 < argc) ounce_arg = argv[++i];
         else if (!strcmp(argv[i], "--writes")) opt_writes = 1;
         else if (!strcmp(argv[i], "--made")) opt_made = 1;
         else if (argv[i][0] != '-' && !path) path = argv[i];
-        else { fprintf(stderr, "usage: %s <capture> [--repeat n] [--max-pixels n] [--warm n] [--png path] [--texdump dir] [--writes] [--made]\n", argv[0]); return 2; }
+        else { fprintf(stderr, "usage: %s <capture> [--repeat n] [--max-pixels n] [--warm n] [--png path] [--texdump dir] [--sdk-ounce 0|1] [--writes] [--made]\n", argv[0]); return 2; }
     }
-    if (!path) { fprintf(stderr, "usage: %s <capture> [--repeat n] [--max-pixels n] [--warm n] [--png path] [--texdump dir] [--writes] [--made]\n", argv[0]); return 2; }
+    if (!path) { fprintf(stderr, "usage: %s <capture> [--repeat n] [--max-pixels n] [--warm n] [--png path] [--texdump dir] [--sdk-ounce 0|1] [--writes] [--made]\n", argv[0]); return 2; }
     uint64_t maxpx = strtoull(maxpx_arg, NULL, 10);
     if (repeat > 1) {   // each replay in a fresh process: a replay in the same process starts from the replay layer's state the one before left (--warm), which changes the frame
         int ok = 0, worst = 0;
@@ -209,6 +211,7 @@ int main(int argc, char **argv) { @autoreleasepool {
             args[na++] = argv[0]; args[na++] = path; args[na++] = "--index"; args[na++] = idx; args[na++] = "--max-pixels"; args[na++] = maxpx_arg;
             if (png) { args[na++] = "--png"; args[na++] = png; }
             if (tdir) { args[na++] = "--texdump"; args[na++] = tdir; }
+            if (ounce_arg) { args[na++] = "--sdk-ounce"; args[na++] = ounce_arg; }
             args[na] = NULL;
             pid_t pid; extern char **environ; int st = 0; char self[1024]; uint32_t sn = sizeof self;   // this executable by its path (argv[0] may have come from PATH)
             if (_NSGetExecutablePath(self, &sn)) strlcpy(self, argv[0], sizeof self);
@@ -241,6 +244,13 @@ int main(int argc, char **argv) { @autoreleasepool {
     if (ln != strlen(cap_layout()) || memcmp(lay, cap_layout(), ln)) RFAIL("the capture's record layout differs from this build's (nvn_obj.h changed since the capture): capture again");
     if (!head_get(head, hn, "iface", v, sizeof v) || atoi(v) != CAP_IFACE)   // the shader interface hashes check_programs compares (nvn_capture.inc cap_iface)
         RFAIL("the capture's shader interface hashes are of another kind (%s, this build %d: before 2 they hashed nvn_refl.h's struct bytes): capture again", head_get(head, hn, "iface", v, sizeof v) ? v : "none", CAP_IFACE);
+    int ounce = head_get(stat, sn, "sdk_ounce", v, sizeof v) ? atoi(v) : -1, gob = head_get(stat, sn, "gob_switch2", v, sizeof v) ? atoi(v) : -1;
+    if (ounce < 0 || gob < 0) {
+        if (!ounce_arg) RFAIL("the capture does not say whether the game's sdk was built for the Switch 2 (made before captures recorded it), which decides the GOB order of the textures uploaded from the pools "
+                              "and NVN2's compute constants: capture again, or give --sdk-ounce 1 if the live run's log has \"sdk: built for the Switch 2 (spec: Ounce)\", --sdk-ounce 0 if it does not");
+        ounce = gob = atoi(ounce_arg) != 0;
+    } else if (ounce_arg && (atoi(ounce_arg) != 0) != ounce) RFAIL("--sdk-ounce %s, but the capture was made with sdk_ounce %d", ounce_arg, ounce);
+    g_sdk_ounce = ounce; nvn_gob_switch2 = gob;
     printf("capture %s: %s frame %s, build %s, host %s, chain %s (this build: chain %s)\n", path, title, frame, build, commit, chain, DMSH_CHAIN);
     apply_env(head, hn);
     mtl_init();
