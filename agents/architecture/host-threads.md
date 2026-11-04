@@ -10,13 +10,14 @@ Other files of this folder: [overview.md](overview.md) (the thread inventory), [
 
 | Name | What | Line |
 |---|---|---|
-| `G` | The scheduler mutex. It is the mutex of every thread's condition variables | `:98` |
+| `G` | The scheduler mutex. It is the mutex of every thread's condition variables; since refactor item H3 those are signalled after `G` is released, except in `block` and past 16 queued signals | `:98` |
 | `g_h[4096]` | Handle table: type and object. Handle = 0x1000 + index; index 0 is unused, so the first handle is 0x1001 | `:99-100`; `h_new` `:105-108` (G held) |
 | `h_peek`, `h_get` | Lookups. `H_CUR_THREAD` (0xFFFF8000) gives the caller. `h_get` also logs a miss | `:109-119` |
 | `g_keythr` | TSD key: pthread → `thr_t` | `:101`; created at `:513` |
 | `g_next_id` | Next thread ID, from 0x51 | `:102` |
 | `g_all` | All threads, linked through `all` | `:93` |
 | `g_wait_key[256]`, `g_wait_sync` | Waiting threads since refactor item H2: lock, condition and address waiters in buckets hashed by kind and key (`wait_head`), sync-object waiters (kind 4, matched through their handle arrays) on their own list; each chain doubly linked through `next` / `pprev`, so a waiter unlinks in constant time; every scan still filters by kind and key | `hle_thread.c` (`wait_head`, `wait_link`, `wait_unlink`) |
+| `g_cv_defer[16]`, `g_cv_ndefer` | Since H3, per host thread (`__thread`): the condition-variable signals one hold of `G` queued (`cv_signal`); `cv_flush` issues them in wake order after `G` is released. A 17th signal in one hold goes out at once under `G` | `hle_thread.c:256-267` |
 | `g_wseq` | Wait registration counter | `:223` |
 | `g_se[512]`, `g_se_lock` | System event bindings | `:38-41` |
 | `g_core_preempt` | `DM_PREEMPT` or the profile's `DM_GAME_CORE_PREEMPT` | `:96`; set at `:515` |
@@ -35,6 +36,7 @@ Result codes: `R_TIMEOUT` 0xEA01, `R_CANCELLED` 0xEC01, `R_BAD_HANDLE` 0xE401, `
 |---|---|---|
 | `handle`, `id`, `entry`, `arg`, `stack_top`, `prio`, `core`, `mask` | Creation values and the Horizon scheduling bookkeeping | `:53-54` |
 | `started`, `exited`, `cancel`, `pt`, `cv` | Life state, the pthread, its condition variable | `:56-57` |
+| `cv_pend` | Signals queued for this thread and not yet issued (atomic; incremented under `G`, decremented by `cv_flush` without it) | `:58` |
 | `wkind`, `woke`, `waddr`, `wkey`, `wtag`, `wres` | The current wait. Kinds: 0 none, 1 lock, 2 condition, 3 address, 4 sync object | `:59` |
 | `sleeping` | In a timed sleep or a back-off sleep (atomic) | `:60` |
 | `yield_pending` | This thread woke a higher-priority thread pinned to its core | `:61` |
@@ -83,12 +85,13 @@ A guest thread exits with `pthread_exit` from inside the SVC (`:362`), so all of
    4. Waits on `cv` until `started` (`:338`).
    5. `pthread_setname_np` with the handle and the guest name from `ThreadType+0x1a0` (`:339`; `thr_name` `:580-586`).
    6. `dm_thread_enter` (`:340`; `dm/host/entry.S:163-173`): sp = the guest stack, x29 = 0, branch to the entry. If the entry returns, `dm_thread_returned` dies (`dm/host/hle_thread.c:364`).
-3. StartThread, SVC 0x09 (`:948-958`): `started` = 1, signal `cv`, `note_runnable`. If that set `yield_pending`, it also records `start_by` / `start_epoch` (`:954`).
+3. StartThread, SVC 0x09 (`:948-958`): `started` = 1, queue the signal of `cv` (issued by `svc_thread` after `G` is released, `:944`), `note_runnable`. If that set `yield_pending`, it also records `start_by` / `start_epoch` (`:954`).
 4. ExitThread, SVC 0x0A (`:959`) → `thread_exit` (`:353-363`):
    - Records the exit time and does not log (`:354-355`).
    - Under `G`: `exited` = 1, `wake_sync_waiters(t)`, clear `g_keythr`, `thr_free` if `closed`.
+   - After releasing `G`, `cv_flush` issues its waiters' signals (`:388-390`).
    - `pthread_exit`.
-5. CloseHandle on a thread, SVC 0x16 (`:1163-1167`): frees the slot and sets `closed`; `thr_free` if already exited. `thr_free` (`:343-351`) unlinks from `g_all` and removes every `hand[]` and `start_by` pointing at the freed thread.
+5. CloseHandle on a thread, SVC 0x16 (`:1163-1167`): frees the slot and sets `closed`; `thr_free` if already exited. `thr_free` (`:343-351`) first waits, holding `G`, with `sched_yield` until the thread's `cv_pend` is 0, so no queued signal reaches a destroyed `cv` (`:376-377`); it unlinks from `g_all` and removes every `hand[]` and `start_by` pointing at the freed thread.
 6. The main thread: `guest_main` (`dm/host/main.c:22`) calls `svc_thread_main_init` (`dm/host/hle_thread.c:512-533`):
    - Key, QoS map, preempt mode, SIGUSR2 handler, hitch thread (`:513-517`).
    - Priority 44, core 0, mask 1, `started` (`:521`).
@@ -100,18 +103,19 @@ A guest thread exits with `pthread_exit` from inside the SVC (`:362`), so all of
 
 ## Waiting
 
-All under `G`.
+The bookkeeping is all under `G`. Since H3 the host-level signals are queued (`cv_signal`) and issued after `G` is released (`cv_flush`).
 
 1. `block(t, kind, ns)` (`:250-270`):
    1. Sets `wkind`, clears `woke`, links `t` into its kind and key's bucket (`wait_link`; kind 4 into `g_wait_sync`), `wseq = ++g_wseq` (`:251`).
    2. `ns == 0`: unlinks and returns `R_TIMEOUT` (`:252`).
    3. `hand_leave(t)` (`:253`).
    4. Deadline: on the guest clock under the deterministic clock (`:255-256`); otherwise an absolute `CLOCK_REALTIME` time (`:257-258`).
-   5. `pthread_cond_wait` or `pthread_cond_timedwait` on `t->cv` with `G` until `woke` or the deadline (`:259-268`).
-   6. Returns `wres`, or `R_TIMEOUT`.
-2. `wake(t, res)` (`:245-248`): unlink, `wkind` = 0, `woke` = 1, `wres`, signal `t->cv`, then `note_runnable(t)`.
+   5. Issues the caller's queued signals, still under `G` (`:282`): WaitProcessWideKeyAtomic hands its lock to a waiter, then blocks in the same hold.
+   6. `pthread_cond_wait` or `pthread_cond_timedwait` on `t->cv` with `G` until `woke` or the deadline (`:259-268`).
+   7. Returns `wres`, or `R_TIMEOUT`.
+2. `wake(t, res)` (`:245-248`): unlink, `wkind` = 0, `woke` = 1, `wres`, queue the signal of `t->cv` (`cv_signal`), then `note_runnable(t)`. The signal is issued after `G` is released by `svc_thread`, `thread_exit`, `dm_guest_clock_advanced` or the `hle_signal_*` functions, or under `G` by `block` before it waits; the 17th and later in one hold go out at once under `G`.
 3. `pick(kind, a)` (`:223-231`): the waiter of that kind and address (key for kind 2) with the lowest priority number, then the lowest `wseq`.
-4. Under the deterministic clock, `dm_guest_clock_advanced` (`:572-577`) signals every waiter so it re-checks its guest deadline. `dm_detclock_enabled` is at `dm/host/hle_os.c:61`.
+4. Under the deterministic clock, `dm_guest_clock_advanced` (`:572-577`) queues a signal for every waiter, issued after the unlock (`:603-605`), so it re-checks its guest deadline. `dm_detclock_enabled` is at `dm/host/hle_os.c:61`.
 
 ## Synchronization SVCs
 
@@ -160,6 +164,7 @@ Service events are real kernel events, created by the SDK's own code.
 3. `hle_signal_bound_system_event` (`:1244`) signals only a bound event, from any thread. `hle_clear_system_event` (`:1252`) clears one.
 4. `hle_system_event_binding` (`:1202`) returns the binding ID. `hle_signal_system_event_binding` (`:1209`) signals by ID under `G`, then `g_se_lock`, so a closed and reused handle is not signalled.
 5. `hle_dup_readable_handle` (`:1195`) adds a read end: `refs++`.
+6. Since H3 the signal functions issue the waiters' signals after releasing `G` (`:1250`, `:1263`, `:1282`): host threads such as audio and vsync never pass through `svc_thread`.
 
 See `docs/reference/threads.md`, "Service-event producers follow the binding lifetime".
 
@@ -171,7 +176,7 @@ On Horizon, a woken higher-priority thread pinned to the caller's core runs befo
    - `t->hand[]` gets (waker, `waker->hand_epoch`), plus the waker's own live handoffs, up to 4.
    - It sets `waker->yield_pending` when `t` has a lower priority number, is pinned to the waker's core, and the waker's mask allows no other core (`:243`).
    - For a `host_owned` `t` it clears `t->nhand` and records nothing (`:238-239`).
-2. `svc_thread` (`:913-925`) runs `svc_thread_impl`, then the check: if `g_core_preempt` or `yield_pending`, it calls `dm_yield_to_core_peers(g_core_preempt)` and counts the wait. `svc_dispatch` calls it before its own `switch` (`dm/host/hle_svc.c:458-459`), and `svc_thread_impl` returns 0 for SVCs it does not handle. So the check runs after the body of a thread or sync SVC, but before the body of any other SVC (0x01-0x06, 0x1E, 0x26, 0x27, 0x29, 0x2C / 0x2D, unknown). Spin and counter gates never reach it (`dm/host/hle.c:116-125`).
+2. `svc_thread` (`:913-925`) runs `svc_thread_impl`, then `cv_flush` (`:944`; the handoff wait below needs the woken thread already signalled), then the check: if `g_core_preempt` or `yield_pending`, it calls `dm_yield_to_core_peers(g_core_preempt)` and counts the wait. `svc_dispatch` calls it before its own `switch` (`dm/host/hle_svc.c:458-459`), and `svc_thread_impl` returns 0 for SVCs it does not handle. So the check runs after the body of a thread or sync SVC, but before the body of any other SVC (0x01-0x06, 0x1E, 0x26, 0x27, 0x29, 0x2C / 0x2D, unknown). Spin and counter gates never reach it (`dm/host/hle.c:116-125`).
 3. `dm_yield_to_core_peers(all)` (`:192-205`):
    1. Returns at once if the caller's mask allows another core (`:195`).
    2. Under `G`, looks for a peer that is started, not exited, not host-owned, pinned to the caller's core, higher priority, runnable, and either `all` or in this caller's handoff (`thr_in_handoff`, `:136-139`) (`:199-200`).
@@ -313,6 +318,9 @@ These read or write fields that other paths read under `G`. They are stated as c
 | `yield_for`, `dm_guest_sleep_ns` | own `sleeping` (atomic) | `:763`, `:909` | `thr_runnable` |
 | `thr_svc_leave` fast path | `svc_state`, `svc_regs` (atomic) | `:405` | SetThreadActivity, `ctx_fill` |
 | `svc_thread_dump` | `g_all` and every `thr_t` | `:666-737` | |
+| `cv_flush` | each queued thread's `cv` (signal) and `cv_pend` (atomic decrement, release) | `:264-267` | `thr_free` waits for `cv_pend` 0 (acquire, `:376`) |
+
+Between releasing `G` and its `cv_flush`, no path takes `G` again (`svc_thread` `:943-944`, `thread_exit`, `dm_guest_clock_advanced`, the `hle_signal_*` functions). `thr_free` spins on `cv_pend` holding `G`, so a `G` section added in such a window would deadlock it.
 
 `dm_thread_mark_host` runs on the new thread, after StartThread's `note_runnable` (`:952`) has already run with `host_owned` = 0. Until then a lower-priority spawner pinned to the same core can get `yield_pending` and wait for the new thread in `dm_yield_to_core_peers`. The wait ends once `spawn_tramp` has set `host_owned`.
 

@@ -235,6 +235,12 @@ $(B)/t_waitq: t_waitq.c t_condvar_stub.c ../hle_thread.c ../dm.h $(GAME_H) | $(B
 waitq: $(B)/t_waitq
 	$(B)/t_waitq
 run: waitq
+$(B)/t_cvsignal: t_cvsignal.c t_condvar_stub.c ../hle_thread.c ../dm.h $(GAME_H) | $(B)
+	$(CLANG) -O2 -flto=thin -g -Wall -Werror -Wno-unused-function -DDM_TEST_THREAD_ENTER -I.. $(GINC) -o $@ t_cvsignal.c t_condvar_stub.c
+.PHONY: cvsignal
+cvsignal: $(B)/t_cvsignal
+	$(B)/t_cvsignal
+run: cvsignal
 # the Vorbis tests build their own packets and need no game profile (they build without GAME)
 $(B)/t_vorbis: t_vorbis.c ../../third_party/stb_vorbis/stb_vorbis.c | $(B)
 	$(CLANG) -O2 -flto=thin -g -Wno-unused-function -Wno-tautological-compare -o $@ t_vorbis.c

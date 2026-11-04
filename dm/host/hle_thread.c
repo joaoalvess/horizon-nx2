@@ -55,6 +55,7 @@ typedef struct thr {
     uint64_t born_ns, exit_ns; uint32_t born_tick, exit_tick;   // Time of creation / exit and the game tick at that time (for the state dump: did the job worker exit before the stall)
     int started, exited, cancel;
     pthread_t pt; pthread_cond_t cv;
+    _Atomic int cv_pend;
     // Current wait: kind 0=none 1=lock 2=condition 3=address 4=synchronization object
     int wkind, woke; uint64_t waddr, wkey; uint32_t wtag; int64_t wres;
     _Atomic int sleeping;      // inside SleepThread's timed sleep (not runnable; used by dm_yield_to_core_peers)
@@ -252,8 +253,20 @@ static void note_runnable(thr_t *t) {
         if (self->hand[i].by != t && self->hand[i].by->hand_epoch == self->hand[i].epoch) t->hand[t->nhand++] = self->hand[i];   // only handoffs still in progress
     if (t->prio < self->prio && t->mask == 1ull << (self->core & 63) && !(self->mask & ~t->mask)) self->yield_pending = 1;   // a waker that can run on another core is not held (dm_yield_to_core_peers)
 }
+#define CV_DEFER 16
+static __thread thr_t *g_cv_defer[CV_DEFER];
+static __thread int g_cv_ndefer;
+static void cv_signal(thr_t *t) {
+    if (g_cv_ndefer == CV_DEFER) { pthread_cond_signal(&t->cv); return; }
+    atomic_fetch_add_explicit(&t->cv_pend, 1, memory_order_relaxed);
+    g_cv_defer[g_cv_ndefer++] = t;
+}
+static void cv_flush(void) {
+    for (int i = 0; i < g_cv_ndefer; i++) { thr_t *t = g_cv_defer[i]; pthread_cond_signal(&t->cv); atomic_fetch_sub_explicit(&t->cv_pend, 1, memory_order_release); }
+    g_cv_ndefer = 0;
+}
 static void wake(thr_t *t, int64_t res) {
-    wait_unlink(t); t->wkind = 0; t->woke = 1; t->wres = res; pthread_cond_signal(&t->cv);
+    wait_unlink(t); t->wkind = 0; t->woke = 1; t->wres = res; cv_signal(t);
     note_runnable(t);
 }
 // Suspend until woken or timed out (ns<0 infinite, 0 immediate timeout); returns wres or R_TIMEOUT
@@ -266,6 +279,7 @@ static int64_t block(thr_t *t, int kind, int64_t ns) {
     uint64_t guest_deadline = det_wait ? guest_ns() + (uint64_t)ns : 0;
     if (ns > 0 && !det_wait) { clock_gettime(CLOCK_REALTIME, &dl); dl.tv_sec += ns / 1000000000; dl.tv_nsec += ns % 1000000000;
                   if (dl.tv_nsec >= 1000000000) { dl.tv_sec++; dl.tv_nsec -= 1000000000; } }
+    cv_flush();
     while (!t->woke) {
         int rc;
         if (det_wait) {
@@ -359,6 +373,7 @@ static void thr_free(thr_t *t) {   // Holding G; unlink from the all-threads cha
         for (int i = 0; i < u->nhand; ) if (u->hand[i].by == t) u->hand[i] = u->hand[--u->nhand]; else i++;
         if (u->start_by == t) u->start_by = NULL;
     }
+    while (atomic_load_explicit(&t->cv_pend, memory_order_acquire)) sched_yield();
     pthread_cond_destroy(&t->cv); pthread_cond_destroy(&t->pcv); free(t);
 }
 static void wake_sync_waiters(const void *obj);
@@ -371,6 +386,7 @@ static void thread_exit(thr_t *t) {
     pthread_setspecific(g_keythr, NULL);
     if (t->closed) thr_free(t);
     pthread_mutex_unlock(&G);
+    cv_flush();
     pthread_exit(NULL);
 }
 void dm_thread_returned(void) { die("guest thread entry function returned (Horizon requires ExitThread)"); }
@@ -584,8 +600,9 @@ static int64_t now_mono_ns(void) { struct timespec ts; clock_gettime(CLOCK_MONOT
 void dm_guest_clock_advanced(void) {
     if (!dm_detclock_enabled()) return;
     pthread_mutex_lock(&G);
-    for (thr_t *t = g_all; t; t = t->all) if (t->wkind) pthread_cond_signal(&t->cv);
+    for (thr_t *t = g_all; t; t = t->all) if (t->wkind) cv_signal(t);
     pthread_mutex_unlock(&G);
+    cv_flush();
 }
 
 // Handle thread / synchronization SVCs; returns 1 = handled
@@ -924,6 +941,7 @@ void dm_guest_sleep_ns(int64_t ns) {
 }
 int svc_thread(int num, uint64_t *regs) {
     int r = svc_thread_impl(num, regs);
+    cv_flush();
     thr_t *me = pthread_getspecific(g_keythr);
     // The default path hands off only after a wake. The optional broader mode
     // also checks peers that were already runnable, without serializing every
@@ -961,7 +979,7 @@ static int svc_thread_impl(int num, uint64_t *regs) {
         pthread_mutex_lock(&G);
         thr_t *t = h_get((uint32_t)regs[0], O_THREAD);
         if (t) {
-            t->started = 1; pthread_cond_signal(&t->cv); note_runnable(t);
+            t->started = 1; cv_signal(t); note_runnable(t);
             thr_t *self = pthread_getspecific(g_keythr);
             if (self && self->yield_pending) { t->start_by = self; t->start_epoch = atomic_load(&self->hand_epoch); }   // this start holds its caller: dm_thread_service_request
         }
@@ -1229,6 +1247,7 @@ int hle_signal_system_event_binding(uint64_t binding) {
     event_t *e = wh ? h_get(wh, O_EVENT_W) : NULL;
     if (e) { e->signaled = 1; wake_sync_waiters(e); }
     pthread_mutex_unlock(&G);
+    cv_flush();
     return e != NULL;
 }
 void hle_signal_system_event(void *ev) {   // An unbound one is bound on the spot as manual-clear (only on a guest thread: off one it is skipped)
@@ -1241,6 +1260,7 @@ void hle_signal_system_event(void *ev) {   // An unbound one is bound on the spo
             if (!e) die("SystemEvent write-end handle invalid %#x", wh);
             e->signaled = 1; wake_sync_waiters(e);
             pthread_mutex_unlock(&G);
+            cv_flush();
             return;
         }
         pthread_mutex_unlock(&G);
@@ -1259,6 +1279,7 @@ int hle_signal_bound_system_event(void *ev) {
     event_t *e = wh ? h_get(wh, O_EVENT_W) : NULL;
     if (e) { e->signaled = 1; wake_sync_waiters(e); }
     pthread_mutex_unlock(&G);
+    cv_flush();
     return e != NULL;
 }
 void hle_clear_system_event(void *ev) {   // Clear a bound service-layer SystemEvent (any thread), as the service does when its condition ends; an unbound one has nothing to clear
