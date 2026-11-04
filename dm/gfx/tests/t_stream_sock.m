@@ -260,6 +260,13 @@ int main(void) { @autoreleasepool {
     st_tally a3 = {0};
     capture_frames(flat, 5, &ticket);
     hub_drain(fd, &a3, 5, 2000);
+    uint32_t gen_before = g_st_gen;
+    dispatch_sync(g_st_encq, ^{ VTCompressionSessionInvalidate(g_st_vt); });
+    st_tally inv = {0};
+    capture_reading(fd, &inv, flat, 12, &ticket);
+    hub_drain(fd, &inv, 0, 300);
+    CHECK("an encoder session VideoToolbox invalidated is made again", encoder_on() && g_st_gen == gen_before + 1);
+    CHECK("frames come again after the session is made again, starting with parameter sets and a sync frame", inv.frames >= 8 && inv.configs >= 1 && inv.sync >= 1);
     uint64_t pauses2 = atomic_load(&g_st_pauses);
 
     close(fd);

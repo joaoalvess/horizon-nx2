@@ -34,7 +34,7 @@ static VTCompressionSessionRef g_st_vt;
 static CVPixelBufferRef g_st_px[ST_SLOTS];
 static uint32_t g_st_gen;
 static int g_st_w, g_st_h;
-static int g_st_ltr = 1, g_st_acked, g_st_attached, g_st_src_w, g_st_src_h;
+static int g_st_ltr = 1, g_st_acked, g_st_attached, g_st_src_w, g_st_src_h, g_st_hevc, g_st_kbps;
 static NSMutableArray<NSNumber *> *g_st_acks;
 static _Atomic int g_st_busy[ST_SLOTS], g_st_force, g_st_sending;
 static st_frame g_st_slot[ST_SLOTS];
@@ -289,6 +289,7 @@ static void st_frame_out(CMSampleBufferRef sb, st_frame f, uint64_t start_ns, ui
     st_stats(done_ns);
 }
 
+static void st_restart(void);
 static void st_encoded(void *session_ref, void *frame_ref, OSStatus status, VTEncodeInfoFlags flags, CMSampleBufferRef sb) {
     (void)session_ref;
     int i = (int)(intptr_t)frame_ref;
@@ -300,6 +301,7 @@ static void st_encoded(void *session_ref, void *frame_ref, OSStatus status, VTEn
         if (status) { atomic_fetch_add(&g_st_failed, 1); static int once; if (!once++) LOG("[RED] stream: the encoder failed a frame (%d)", (int)status); }
         else atomic_fetch_add(&g_st_encoder_drops, 1);
         if (f.force) st_request(f.force);
+        if (status == kVTInvalidSessionErr) dispatch_async(g_st_encq, ^{ if (g_st_vt && f.gen == g_st_gen) st_restart(); });
         return;
     }
     CFRetain(sb);
@@ -358,7 +360,7 @@ static int st_start(int w, int h, int hevc, int kbps) {
     g_st_acked = 0; [g_st_acks removeAllObjects];
     atomic_store(&g_st_force, ST_FORCE_KEY);
     pthread_mutex_lock(&g_st_mu);
-    g_st_vt = vt; memcpy(g_st_px, px, sizeof px); g_st_gen++; g_st_w = w; g_st_h = h;
+    g_st_vt = vt; memcpy(g_st_px, px, sizeof px); g_st_gen++; g_st_w = w; g_st_h = h; g_st_hevc = hevc; g_st_kbps = kbps;
     pthread_mutex_unlock(&g_st_mu);
     LOG("[stream] %s %dx%d, %d kbit/s, low-latency rate control, LTR %s, %d frames in flight", hevc ? "HEVC" : "H.264", w, h, kbps, g_st_ltr ? "on" : "off", ST_SLOTS);
     return 1;
@@ -370,6 +372,13 @@ static void st_client(int on) {
     dm_audio_stream(on ? st_audio : NULL);
     dm_focus_stream(on ? 1 : g_st_paused ? 2 : 0);
     mtl_stream_pace(on || g_st_paused);
+}
+
+static void st_restart(void) {
+    LOG("[RED] stream: VideoToolbox invalidated the encoder session: making it again at %dx%d, %d kbit/s", g_st_w, g_st_h, g_st_kbps);
+    int ok = st_start(g_st_w, g_st_h, g_st_hevc, g_st_kbps);
+    pthread_mutex_lock(&g_st_qmu); g_st_qgen = ok ? g_st_gen : 0; st_drop_queued(1); pthread_mutex_unlock(&g_st_qmu);
+    if (!ok) { atomic_store(&g_st_sending, 0); st_client(0); }
 }
 
 static void st_detach(int pause, const char *why) {
@@ -473,7 +482,7 @@ static int st_hub_message(const dms_header *h, uint8_t *p, uint32_t n) {
     case DMS_BITRATE: {
         int kbps = (int)dms_get32(&r);
         if (r.bad || kbps <= 0) { LOG("[RED] stream: a BITRATE of %d kbit/s from the hub, ignored", kbps); return 1; }
-        dispatch_async(g_st_encq, ^{ if (g_st_vt) st_prop(g_st_vt, kVTCompressionPropertyKey_AverageBitRate, (__bridge CFNumberRef)@((long long)kbps * 1000)); });
+        dispatch_async(g_st_encq, ^{ if (g_st_vt) { g_st_kbps = kbps; st_prop(g_st_vt, kVTCompressionPropertyKey_AverageBitRate, (__bridge CFNumberRef)@((long long)kbps * 1000)); } });
         LOG("[stream] the hub set the bitrate to %d kbit/s", kbps);
         return 1;
     }
@@ -668,6 +677,7 @@ void dm_stream_put(int i, uint32_t gen, uint64_t ticket, uint64_t capture_ns, do
             atomic_fetch_add(&g_st_failed, 1); atomic_store(&g_st_busy[i], 0);
             if (force) st_request(force);
             static int once; if (!once++) LOG("[RED] stream: VTCompressionSessionEncodeFrame failed (%d)", (int)s);
+            if (s == kVTInvalidSessionErr) st_restart();
         }
     });
 }
