@@ -31,3 +31,5 @@ Report: write `agents/refactor/reports/<YYYYMMDD-HHMM>-<ID>-impl.md` with:
 - anything that did not hold.
 
 Then reply with one line, `<ID> impl: ready` or `<ID> impl: failed: <reason>`, followed by the report path.
+
+If the harness refuses your report file, put the full report in your reply instead; the main thread saves it.

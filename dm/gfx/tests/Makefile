@@ -11,7 +11,7 @@ GAME_H = ../../host/gen/$(GAME)/game_profile.h
 
 # The host's shaders compiled for the Mac (host_msl_gen.h, made by the host Makefile from dm/gfx/msl; nvn/host_msl.m loads them)
 MSL_H = ../../host/gen/msl-macosx/host_msl_gen.h
-CFLAGS=-O1 -g -Wall -Wno-unused-function -I../nvn/include -I$(dir $(GAME_H)) -I$(dir $(MSL_H))
+CFLAGS=-O2 -flto=thin -Wl,-export_dynamic -g -Wall -Wno-unused-function -I../nvn/include -I$(dir $(GAME_H)) -I$(dir $(MSL_H))
 GFX=$(filter-out ../nvn/hle_nvn.c,$(sort $(wildcard ../nvn/*.c ../nvn/*.m ../nvn/*.S ../tex/*.c ../tex/*.m)))
 GFX_H=$(wildcard ../nvn/*.h ../nvn/*.inc ../nvn/include/*.h ../tex/*.h) $(GAME_H) $(MSL_H)
 .DEFAULT_GOAL := t_nvn   # the profile header rule comes first, so keep the default goal as before
@@ -58,15 +58,15 @@ t_dirty_race: t_dirty_race.c ../nvn/nvn_dirty.c ../../host/crash.c ../nvn/nvn_di
 t_dirty_retire_race: t_dirty_retire_race.c ../nvn/nvn_dirty.c ../../host/crash.c ../nvn/nvn_dirty.h $(GAME_H)
 	clang $(CFLAGS) -o $@ t_dirty_retire_race.c ../../host/crash.c
 t_host_msl: t_host_msl.m ../nvn/host_msl.m ../nvn/host_msl.h $(MSL_H)
-	clang -O1 -g -Wall -I$(dir $(MSL_H)) -fobjc-arc -o $@ t_host_msl.m ../nvn/host_msl.m -framework Metal -framework Foundation
+	clang -O2 -flto=thin -g -Wall -I$(dir $(MSL_H)) -fobjc-arc -o $@ t_host_msl.m ../nvn/host_msl.m -framework Metal -framework Foundation
 t_builtin: t_builtin.m ../nvn/nvn_builtin.h ../nvn/host_msl.m $(MSL_H)
-	clang -O1 -g -Wall -I$(dir $(MSL_H)) -fobjc-arc -o $@ t_builtin.m ../nvn/host_msl.m -framework Metal -framework Foundation
+	clang -O2 -flto=thin -g -Wall -I$(dir $(MSL_H)) -fobjc-arc -o $@ t_builtin.m ../nvn/host_msl.m -framework Metal -framework Foundation
 t_vin: t_vin.m
-	clang -O1 -g -Wall -fobjc-arc -o $@ t_vin.m -framework Metal -framework Foundation
+	clang -O2 -flto=thin -g -Wall -fobjc-arc -o $@ t_vin.m -framework Metal -framework Foundation
 t_tbuf2d: t_tbuf2d.m ../nvn/nvn_tex.c ../nvn/nvn_tex.h
-	clang -O1 -g -Wall -fobjc-arc -o $@ t_tbuf2d.m ../nvn/nvn_tex.c -framework Metal -framework Foundation
+	clang -O2 -flto=thin -g -Wall -fobjc-arc -o $@ t_tbuf2d.m ../nvn/nvn_tex.c -framework Metal -framework Foundation
 t_tbuf_align: t_tbuf_align.m
-	clang -O1 -g -Wall -fobjc-arc -o $@ t_tbuf_align.m -framework Metal -framework Foundation
+	clang -O2 -flto=thin -g -Wall -fobjc-arc -o $@ t_tbuf_align.m -framework Metal -framework Foundation
 t_sparse_layout: t_sparse_layout.c ../nvn/nvn_tex.c ../nvn/nvn_tex.h
 	clang $(CFLAGS) -o $@ t_sparse_layout.c ../nvn/nvn_tex.c
 t_sparse_tile: t_sparse_tile.c ../nvn/nvn_tex.c ../nvn/nvn_tex.h ../tex/nvn_deswizzle.c ../tex/nvn_deswizzle.h ../nvn/nvn_mtl.m
@@ -80,19 +80,19 @@ check_t_sparse_tex: t_sparse_tex
 t_deswz_gpu: t_deswz_gpu.m ../tex/nvn_deswizzle.c ../tex/nvn_deswizzle_gpu.m ../tex/nvn_deswizzle.h ../tex/nvn_deswizzle_gpu.h ../nvn/nvn_tex.c ../nvn/nvn_tex.h ../nvn/host_msl.m $(MSL_H)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_deswz_gpu.m ../tex/nvn_deswizzle.c ../tex/nvn_deswizzle_gpu.m ../nvn/nvn_tex.c ../nvn/host_msl.m -framework Metal -framework Foundation
 t_tex_layout: t_tex_layout.c ../nvn/nvn_tex.c ../nvn/nvn_tex.h
-	clang -O1 -Wall -o $@ t_tex_layout.c ../nvn/nvn_tex.c
+	clang -O2 -flto=thin -Wall -o $@ t_tex_layout.c ../nvn/nvn_tex.c
 t_refl: t_refl.m ../nvn/nvn_refl.m ../nvn/nvn_refl.h ../nvn/dmsh_chain.h
-	clang -O1 -g -Wall -I../nvn -fobjc-arc -o $@ t_refl.m ../nvn/nvn_refl.m -framework Metal -framework Foundation
+	clang -O2 -flto=thin -g -Wall -I../nvn -fobjc-arc -o $@ t_refl.m ../nvn/nvn_refl.m -framework Metal -framework Foundation
 t_hmap: t_hmap.c ../nvn/nvn_hmap.h
-	clang -O1 -Wall -o $@ t_hmap.c
+	clang -O2 -flto=thin -Wall -o $@ t_hmap.c
 t_cover: t_cover.c ../nvn/nvn_cover.h
-	clang -O1 -Wall -o $@ t_cover.c
+	clang -O2 -flto=thin -Wall -o $@ t_cover.c
 t_pace: t_pace.c ../nvn/nvn_pace.h
-	clang -O1 -Wall -o $@ t_pace.c
+	clang -O2 -flto=thin -Wall -o $@ t_pace.c
 t_timestamp: t_timestamp.c ../nvn/nvn_timestamp.h
 	$(CC) -std=c11 -O2 -g -Wall -Wextra -Werror -o $@ $<
 t_fstep: t_fstep.c ../nvn/nvn_fstep.h
-	clang -O1 -Wall -o $@ t_fstep.c
+	clang -O2 -flto=thin -Wall -o $@ t_fstep.c
 t_thermal: t_thermal.c $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_thermal.c $(MTL_T_SRC) ../nvn/nvn_mtl.m $(FW)
 t_thermal_tsan: t_thermal.c $(MTL_T_DEP)
@@ -307,7 +307,7 @@ t_pull: t_pull.m ../tools/dmsh_pull.metal $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_pull.m $(MTL_T_SRC) $(FW)
 check_t_pull: RUN_ENV = MTL_DEBUG_LAYER=1
 t_pull_inv: t_pull_inv.m ../tools/dmsh_pull.py ../tools/dmsh_pull.metal
-	clang -O1 -g -Wall -fobjc-arc -o $@ t_pull_inv.m -framework Metal -framework Foundation
+	clang -O2 -flto=thin -g -Wall -fobjc-arc -o $@ t_pull_inv.m -framework Metal -framework Foundation
 check_t_pull_inv: RUN_ENV = MTL_DEBUG_LAYER=1
 t_pso_archive: t_pso_archive.m $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_pso_archive.m $(MTL_T_SRC) $(FW)

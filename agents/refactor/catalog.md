@@ -19,7 +19,7 @@ How to read the tables:
 
 | ID | Item | Where | Cost (estimate) | Risk | Checked | Stage | State |
 |---|---|---|---|---|---|---|---|
-| B1 | `-O1` without LTO; change to `-O2` with ThinLTO | `dm/host/Makefile:18`, `dm/gfx/tests/Makefile:14`, `dm/host/tests/Makefile` | unknown; all host code | exposes UB; `__builtin_return_address` under inlining; slower test builds | read; review: holds | S1 | pending |
+| B1 | `-O1` without LTO; change to `-O2` with ThinLTO | `dm/host/Makefile:18`, `dm/gfx/tests/Makefile:14`, `dm/host/tests/Makefile` | unknown; all host code | exposes UB; `__builtin_return_address` under inlining; slower test builds | read; review: holds | S1 | committed (`build(host): build at -O2 with ThinLTO`); review approve with nits (`reports/20261104-0458-B1-review.md`); replay CPU pending R1 |
 
 ## Per draw
 

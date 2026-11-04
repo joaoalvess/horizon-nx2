@@ -10,7 +10,7 @@ int dm_guest_as_contains(uintptr_t a) { return a >= g_lo && a < g_hi; }
 static uintptr_t g_fp;
 static void *g_site;
 // 64 KB of locals: four times the fake guest stack, so running on it would fault in the guard page
-HLE_FORCE_BIG("_ZN4test5probeEmmd", "unit test", uint64_t, probe, uint64_t a, uint64_t b, double d) {
+__attribute__((noinline)) HLE_FORCE_BIG("_ZN4test5probeEmmd", "unit test", uint64_t, probe, uint64_t a, uint64_t b, double d) {
     volatile char big[64 << 10];
     big[0] = 1; big[sizeof big - 1] = 2;
     g_fp = (uintptr_t)__builtin_frame_address(0);
@@ -25,7 +25,7 @@ __asm__(".text\n.p2align 2\n.globl _call_on\n_call_on:\n"
         "    stp x29, x30, [sp, #-16]!\n    mov x29, sp\n"
         "    cbz x2, 1f\n    mov sp, x2\n"
         "1:  blr x3\n"
-        ".globl _call_on_site\n_call_on_site:\n"
+        ".globl _call_on_site\n.alt_entry _call_on_site\n_call_on_site:\n"
         "    mov sp, x29\n    ldp x29, x30, [sp], #16\n    ret\n");
 
 static int checks, fails;

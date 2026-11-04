@@ -293,20 +293,20 @@ HLE_FORCE("_ZN2nn4diag6detail7PutImplERKNS0_11LogMetaDataEPKcm", "game log → h
     (void)meta; while (n && (s[n - 1] == '\n' || s[n - 1] == '\0')) n--; if (n) LOG("[game] %.*s", (int)n, s);
 }
 // Abort: report the call site (module + offset) and the guest backtrace, then exit
-static void diag_abort(uint32_t res, void *lr) {
+__attribute__((noinline)) static void diag_abort(uint32_t res, void *lr) {
     module_t *m = module_of(lr);
     LOG("game called nn::diag abort: Result %#x, call site %s+%#llx", res, m ? m->name : "?", m ? (unsigned long long)((uint8_t *)lr - m->base) : (unsigned long long)(uintptr_t)lr);
     dm_backtrace((uint64_t)__builtin_frame_address(1));
     die("game aborted");
 }
-HLE_FORCE("_ZN2nn4diag6detail9AbortImplEv", "game aborted", void, h_diag_Abort0, void) { diag_abort(0, __builtin_return_address(0)); }
-HLE_FORCE("_ZN2nn4diag6detail9AbortImplEPKNS_6ResultE", "game aborted (with Result)", void, h_diag_AbortR, const uint32_t *r) { diag_abort(r ? *r : 0, __builtin_return_address(0)); }
+__attribute__((noinline)) HLE_FORCE("_ZN2nn4diag6detail9AbortImplEv", "game aborted", void, h_diag_Abort0, void) { diag_abort(0, __builtin_return_address(0)); }
+__attribute__((noinline)) HLE_FORCE("_ZN2nn4diag6detail9AbortImplEPKNS_6ResultE", "game aborted (with Result)", void, h_diag_AbortR, const uint32_t *r) { diag_abort(r ? *r : 0, __builtin_return_address(0)); }
 HLE_FORCE("_ZN2nn4diag12GetBacktraceEPmi", "backtrace; the host provides none (0 frames)", int, h_diag_Bt, uint64_t *out, int n) { (void)out; (void)n; return 0; }
 // An assert, a C++ exception that nothing caught (std::terminate) or an SDK check reached VAbortImpl: print where it came from and the message's FORMAT, which
 // names the failure on its own ("libc++abi: terminating due to uncaught exception of type ...", Well Dweller's first boot). The arguments the format would fill
 // are not expanded: the host cannot read a __va_list the guest built (its register save area holds the guest's general-purpose registers, and the pointers in
 // it are the ones libc++abi passed by value, so the host's vsnprintf prints rubbish where %s is).
-HLE_FORCE("_ZN2nn4diag6detail10VAbortImplEPKcS3_S3_iPKNS_6ResultEPKNS_2os17UserExceptionInfoES3_RSt9__va_list", "SDK abort message", void, h_diag_VAbort,
+__attribute__((noinline)) HLE_FORCE("_ZN2nn4diag6detail10VAbortImplEPKcS3_S3_iPKNS_6ResultEPKNS_2os17UserExceptionInfoES3_RSt9__va_list", "SDK abort message", void, h_diag_VAbort,
           const char *fn, const char *expr, const char *file, int line, const void *res, const void *info, const char *fmt, void *ap) {
     (void)info; (void)ap;
     LOG("[diag] abort at %s: %s (%s:%d) message format %s", fn ? fn : "?", expr ? expr : "?", file ? file : "?", line, fmt ? fmt : "?");

@@ -15,7 +15,7 @@ endif
 endif
 GAME_H = gen/$(GAME)/game_profile.h
 include ../mac/min_os.mk
-CFLAGS=-O1 -g -Wall -Wno-unused-function -mmacosx-version-min=$(MACOS_MIN)
+CFLAGS=-O2 -flto=thin -Wl,-export_dynamic -g -Wall -Wno-unused-function -mmacosx-version-min=$(MACOS_MIN)
 # Service-layer takeover hle_*.c files are included by wildcard: adding a file does not touch this line (avoids merge conflicts)
 SRC=main.c loader.c hle.c crash.c probe.c thread.c save_sync.c memstat.m haptics_apple.m $(sort $(wildcard hle_*.c)) front_mac.m stream_mac.m entry.S
 # NVN null device + nn::vi + the Vulkan layer (dm/gfx/)

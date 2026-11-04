@@ -33,3 +33,5 @@ Check 10 statements in each file of `agents/architecture/` that the brief names 
 ## Full-diff mode
 
 Review `git diff <BASE>..refactor -- . ':!agents'` as one change: interactions between items, leftovers of reverted items, scope drift, comments added, debug code, and every catalog State line that claims a commit the log does not have. Write `agents/refactor/reports/<YYYYMMDD-HHMM>-final-review.md` and reply with its verdict line.
+
+If the harness refuses your report file, put the full report in your reply instead; the main thread saves it.

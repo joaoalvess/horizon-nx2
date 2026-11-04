@@ -29,3 +29,5 @@ Report:
 - Update `captures.md` one row at a time, as each capture is kept or dropped. Give a reason for each one dropped.
 - At the end, write `agents/refactor/reports/<YYYYMMDD-HHMM>-S0-capture.md`.
 - Reply `S0: <n> Pokopia, <n> DK kept`, followed by the report path.
+
+If the harness refuses your report file, put the full report in your reply instead; the main thread saves it.
