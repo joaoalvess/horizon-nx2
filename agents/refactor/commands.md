@@ -54,6 +54,7 @@ python3 /Volumes/Hangar/Games/overnight/guard.py --game pokopia|dk --log <log> -
 - Boot check: 120 s through the guard, with the per-commit host, a fresh save copy and `DM_NVN_SHOT=<frames>:<work>/shots/<name>/f%d.png` at the frames of the base boots (`DM_NVN_SHOT` takes frame numbers, not seconds), then compare the pictures with the base ones in `<work>/shots/base/`.
 - Pokopia and DK boot through `run_pk.sh` / `run_dk.sh` (above).
 - MKW boots only for the HT items: `python3 /Volumes/Hangar/Games/overnight/guard.py --game mkw --log <log> --max 120 -- env DMHOST=<host> <MKW work>/run/boot.sh DM_AUDIO=0 DM_WINDOW=1 DM_SAVE=<fresh cp -cR of <MKW work>/run/save>`.
+- DK gameplay (the user's idea, 2026-11-04): `bootkeys.sh`'s keys plus Y presses after the "Y Punch" prompt, `DM_KEYS=f750:A~f9*10/180,f5400:Y~f6*40/45`, `--max 200`, shots from frame 5400. It breaks the wall into "Explore the mining tunnel" by frame 6600: about 5,400 draws and 50 M submit instructions a frame, against 944 and 13.7 M at the prompt.
 - `DM_NVN_CPUPROF=1` gives renderer CPU totals by operation. Use it for diagnosis; the measurement is replay CPU.
 
 ## Bench
