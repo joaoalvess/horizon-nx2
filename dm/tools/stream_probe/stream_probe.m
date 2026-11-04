@@ -17,6 +17,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include "../../host/stream_proto.h"
+#include "../../host/dm_input.h"
 
 enum {
     AUDIO_RATE = 48000,
@@ -33,7 +34,7 @@ enum {
 static const uint64_t report_interval_ns = 5000000000ull;
 static const uint8_t annex_b_start_code[4] = {0, 0, 0, 1};
 
-typedef enum { ACTION_ATTACH, ACTION_DETACH, ACTION_DETACH_PAUSE, ACTION_REFRESH, ACTION_BITRATE, ACTION_STALL, ACTION_CLOSE, ACTION_QUIT, ACTION_CRASH } script_action_kind;
+typedef enum { ACTION_ATTACH, ACTION_DETACH, ACTION_DETACH_PAUSE, ACTION_REFRESH, ACTION_BITRATE, ACTION_STALL, ACTION_CLOSE, ACTION_QUIT, ACTION_CRASH, ACTION_PADS } script_action_kind;
 
 typedef struct {
     double at_seconds, argument;
@@ -43,6 +44,13 @@ typedef struct {
 } script_action;
 
 typedef struct { double *values; size_t count, capacity; } sample_list;
+
+typedef struct {
+    double at_seconds, hold_seconds;
+    uint64_t buttons;
+    int16_t axes[4];
+    char text[48];
+} key_step;
 
 typedef struct {
     sample_list hop_ms, present_to_received_ms;
@@ -58,7 +66,8 @@ typedef struct {
     size_t stamped_bytes;
     uint64_t *receive_stamps;
     size_t stamp_count, stamp_capacity;
-    int hello_received, ending, stop_processing;
+    int hello_received, ending, stop_processing, attached, pad_dirty;
+    uint64_t pad_sent_ns;
     char end_reason[160];
     uint64_t stall_until_ns;
     int frame_number_known, audio_time_known;
@@ -67,10 +76,16 @@ typedef struct {
 
 static struct {
     const char *socket_path, *output_prefix;
-    int once, verbose, width, height, script_attaches, action_count;
-    uint32_t hello_version, codec, kbps;
+    int once, verbose, width, height, script_attaches, action_count, key_count, sends_pads;
+    uint32_t hello_version, codec, kbps, pads_mask;
     script_action *actions;
-} options = {.width = 1920, .height = 1080, .hello_version = DMS_VERSION, .codec = DMS_AVC1, .kbps = 25000};
+    key_step *keys;
+} options = {.width = 1920, .height = 1080, .hello_version = DMS_VERSION, .codec = DMS_AVC1, .kbps = 25000, .pads_mask = 1};
+
+static int key_next, key_held;
+static double key_release_seconds;
+static uint64_t key_buttons;
+static int16_t key_axes[4];
 
 static FILE *video_file, *audio_file, *video_rows, *audio_rows;
 static uint64_t audio_data_bytes;
@@ -128,7 +143,9 @@ static void print_usage(FILE *stream) {
             "  --kbps N             starting bitrate sent in ATTACH (default 25000)\n"
             "  --hello-version N    protocol version sent in the probe's HELLO (default %d)\n"
             "  --script \"T:action,...\"  T in seconds since the first connection; actions: attach, detach, detach-pause,\n"
-            "                       refresh, bitrate=N, stall=S, close, quit, crash\n"
+            "                       refresh, bitrate=N, stall=S, close, quit, crash, pads=MASK (the players PADS connects)\n"
+            "  --keys \"T:keys[~hold][*count/interval],...\"  player 1's input as DM_KEYS writes it, in seconds since the first\n"
+            "                       connection: names joined by +, held 0.15 s by default; sent as PAD on change and every 100 ms\n"
             "  --verbose            print every STATS message, LTR_ACK and skipped message\n",
             DMS_VERSION);
 }
@@ -312,6 +329,13 @@ static void send_message(uint16_t type, uint16_t flags, const uint8_t *payload, 
 
 static const char *codec_name(void) { return options.codec == DMS_HVC1 ? "HEVC" : "H.264"; }
 
+static void send_pads(void) {
+    uint8_t pads[12] = {0}, *cursor = pads;
+    dms_put32(&cursor, options.pads_mask);
+    for (int p = 0; p < 8; p++) dms_put8(&cursor, options.pads_mask >> p & 1 ? DMS_STYLE_PRO : 0);
+    send_message(DMS_PADS, 0, pads, sizeof pads);
+}
+
 static void send_attach(void) {
     uint8_t attach[16], *cursor = attach;
     dms_put16(&cursor, ATTACH_REFRESH_HZ);
@@ -321,17 +345,15 @@ static void send_attach(void) {
     dms_put32(&cursor, options.codec);
     dms_put32(&cursor, options.kbps);
     send_message(DMS_ATTACH, 0, attach, (uint32_t)(cursor - attach));
-    uint8_t pads[12] = {0};
-    cursor = pads;
-    dms_put32(&cursor, 1);
-    dms_put8(&cursor, DMS_STYLE_PRO);
-    send_message(DMS_PADS, 0, pads, sizeof pads);
+    send_pads();
     connection.frame_number_known = 0;
     connection.audio_time_known = 0;
+    connection.attached = 1;
+    connection.pad_dirty = 1;
     char codec[5];
     fourcc_text(options.codec, codec);
-    note("sent ATTACH %dx%d at %d Hz, %s, %u kbit/s, then PADS with player 1 as a Pro Controller", options.width, options.height, ATTACH_REFRESH_HZ, codec,
-         options.kbps);
+    note("sent ATTACH %dx%d at %d Hz, %s, %u kbit/s, then PADS with players %#x as Pro Controllers", options.width, options.height, ATTACH_REFRESH_HZ, codec,
+         options.kbps, options.pads_mask);
 }
 
 static void send_ltr_ack(int64_t token) {
@@ -788,6 +810,7 @@ static void perform_action(script_action *action, uint64_t now) {
     case ACTION_DETACH:
     case ACTION_DETACH_PAUSE:
         send_message(DMS_DETACH, action->kind == ACTION_DETACH_PAUSE ? DMS_DETACH_PAUSE : 0, NULL, 0);
+        connection.attached = 0;
         note("script %s: sent DETACH%s", action->text, action->kind == ACTION_DETACH_PAUSE ? " with pause" : "");
         break;
     case ACTION_REFRESH:
@@ -809,9 +832,52 @@ static void perform_action(script_action *action, uint64_t now) {
         note("script %s", action->text);
         close_connection("closed by the script");
         break;
+    case ACTION_PADS:
+        options.pads_mask = (uint32_t)action->argument;
+        send_pads();
+        connection.pad_dirty = 1;
+        note("script %s: sent PADS with players %#x", action->text, options.pads_mask);
+        break;
     case ACTION_QUIT:
     case ACTION_CRASH: break;
     }
+}
+
+static void keys_tick(uint64_t now) {
+    if (!first_connection_ns || key_next >= options.key_count) return;
+    double elapsed = run_seconds(now);
+    const key_step *step = &options.keys[key_next];
+    if (!key_held) {
+        if (elapsed < step->at_seconds) return;
+        key_buttons = step->buttons;
+        memcpy(key_axes, step->axes, sizeof key_axes);
+        key_held = 1;
+        key_release_seconds = elapsed + step->hold_seconds;
+        connection.pad_dirty = 1;
+        note("keys %s: pressed at %.2f s for %.2f s", step->text, elapsed, step->hold_seconds);
+    } else if (elapsed >= key_release_seconds) {
+        key_buttons = 0;
+        memset(key_axes, 0, sizeof key_axes);
+        key_held = 0;
+        key_next++;
+        connection.pad_dirty = 1;
+    }
+}
+
+static void pads_tick(uint64_t now) {
+    if (!options.sends_pads || connection.fd < 0 || connection.ending || !connection.attached || !connection.hello_received) return;
+    if (!connection.pad_dirty && now - connection.pad_sent_ns < 80000000ull) return;
+    for (int p = 0; p < 8; p++) {
+        if (!(options.pads_mask >> p & 1)) continue;
+        uint8_t pad[24] = {0}, *cursor = pad;
+        dms_put8(&cursor, (uint8_t)p);
+        cursor += 7;
+        dms_put64(&cursor, p ? 0 : key_buttons);
+        for (int i = 0; i < 4; i++) dms_put16(&cursor, (uint16_t)(p ? 0 : key_axes[i]));
+        send_message(DMS_PAD, 0, pad, sizeof pad);
+    }
+    connection.pad_sent_ns = now;
+    connection.pad_dirty = 0;
 }
 
 static void run_due_actions(uint64_t now) {
@@ -860,6 +926,10 @@ static void parse_script(const char *text) {
             action.kind = ACTION_STALL;
             action.argument = strtod(name + 6, &end);
             if (end == name + 6 || *end || !isfinite(action.argument) || action.argument < 0) usage_error("stall= takes a number of seconds, not \"%s\"", name + 6);
+        } else if (!strncmp(name, "pads=", 5)) {
+            action.kind = ACTION_PADS;
+            action.argument = (double)parse_unsigned(name + 5, "pads=", 0, 255);
+            options.sends_pads = 1;
         } else usage_error("unknown script action \"%s\"", name);
         options.script_attaches |= action.kind == ACTION_ATTACH;
         options.actions = grow_or_die(options.actions, (size_t)(options.action_count + 1) * sizeof *options.actions);
@@ -871,6 +941,67 @@ static void parse_script(const char *text) {
         options.actions[slot] = action;
     }
     free(copy);
+}
+
+static const struct { const char *name; uint64_t button; int axis, sign; } key_names[] = {
+    {"A", DM_BTN_A, -1, 0}, {"B", DM_BTN_B, -1, 0}, {"X", DM_BTN_X, -1, 0}, {"Y", DM_BTN_Y, -1, 0},
+    {"LS", DM_BTN_LS, -1, 0}, {"RS", DM_BTN_RS, -1, 0}, {"L", DM_BTN_L, -1, 0}, {"R", DM_BTN_R, -1, 0},
+    {"ZL", DM_BTN_ZL, -1, 0}, {"ZR", DM_BTN_ZR, -1, 0}, {"Plus", DM_BTN_PLUS, -1, 0}, {"Minus", DM_BTN_MINUS, -1, 0},
+    {"Left", DM_BTN_LEFT, -1, 0}, {"Up", DM_BTN_UP, -1, 0}, {"Right", DM_BTN_RIGHT, -1, 0}, {"Down", DM_BTN_DOWN, -1, 0},
+    {"Shake", DM_BTN_SHAKE, -1, 0},
+    {"LLeft", 0, 0, -1}, {"LRight", 0, 0, 1}, {"LUp", 0, 1, 1}, {"LDown", 0, 1, -1},
+    {"RLeft", 0, 2, -1}, {"RRight", 0, 2, 1}, {"RUp", 0, 3, 1}, {"RDown", 0, 3, -1},
+};
+
+static void add_key_step(const key_step *step) {
+    options.keys = grow_or_die(options.keys, (size_t)(options.key_count + 1) * sizeof *options.keys);
+    int slot = options.key_count++;
+    while (slot > 0 && options.keys[slot - 1].at_seconds > step->at_seconds) {
+        options.keys[slot] = options.keys[slot - 1];
+        slot--;
+    }
+    options.keys[slot] = *step;
+}
+
+static void parse_keys(const char *text) {
+    char *copy = strdup(text), *cursor = NULL;
+    for (char *item = strtok_r(copy, ", \t\n", &cursor); item; item = strtok_r(NULL, ", \t\n", &cursor)) {
+        key_step step = {.hold_seconds = 0.15};
+        snprintf(step.text, sizeof step.text, "%s", item);
+        char *colon = strchr(item, ':');
+        if (!colon) usage_error("the keys item \"%s\" is not T:keys", item);
+        *colon = 0;
+        char *end = NULL;
+        step.at_seconds = strtod(item, &end);
+        if (end == item || *end || !isfinite(step.at_seconds) || step.at_seconds < 0) usage_error("the keys time \"%s\" is not a number of seconds", item);
+        char *names = colon + 1, *repeat = strchr(names, '*'), *hold = strchr(names, '~');
+        int count = 1;
+        double interval = 0;
+        if (repeat) {
+            *repeat = 0;
+            if (sscanf(repeat + 1, "%d/%lf", &count, &interval) != 2 || count < 1 || interval <= 0) usage_error("the keys repeat \"%s\" is not *count/interval", repeat + 1);
+        }
+        if (hold) {
+            *hold = 0;
+            step.hold_seconds = strtod(hold + 1, &end);
+            if (end == hold + 1 || *end || !isfinite(step.hold_seconds) || step.hold_seconds < 0) usage_error("the keys hold \"%s\" is not a number of seconds", hold + 1);
+        }
+        char *name_cursor = NULL;
+        for (char *name = strtok_r(names, "+", &name_cursor); name; name = strtok_r(NULL, "+", &name_cursor)) {
+            size_t k = 0;
+            while (k < sizeof key_names / sizeof *key_names && strcmp(key_names[k].name, name)) k++;
+            if (k == sizeof key_names / sizeof *key_names) usage_error("unknown key \"%s\" (A B X Y LS RS L R ZL ZR Plus Minus Left Up Right Down Shake, LLeft LUp LRight LDown, RLeft RUp RRight RDown)", name);
+            step.buttons |= key_names[k].button;
+            if (key_names[k].axis >= 0) step.axes[key_names[k].axis] = (int16_t)(key_names[k].sign * DM_STICK_MAX);
+        }
+        double first = step.at_seconds;
+        for (int r = 0; r < count; r++) {
+            step.at_seconds = first + r * interval;
+            add_key_step(&step);
+        }
+    }
+    free(copy);
+    options.sends_pads |= options.key_count > 0;
 }
 
 static const char *next_value(int argc, char **argv, int *index) {
@@ -900,6 +1031,7 @@ static void parse_options(int argc, char **argv) {
             else if (!strcmp(codec, "hvc1")) options.codec = DMS_HVC1;
             else usage_error("--codec takes avc1 or hvc1, not \"%s\"", codec);
         } else if (!strcmp(argument, "--script")) parse_script(next_value(argc, argv, &i));
+        else if (!strcmp(argument, "--keys")) parse_keys(next_value(argc, argv, &i));
         else if (argument[0] == '-' && argument[1]) usage_error("unknown option %s", argument);
         else if (!options.socket_path) options.socket_path = argument;
         else if (!options.output_prefix) options.output_prefix = argument;
@@ -979,6 +1111,8 @@ int main(int argc, char **argv) {
             }
             uint64_t now = now_ns();
             run_due_actions(now);
+            keys_tick(now);
+            pads_tick(now);
             if (first_connection_ns && now >= next_report_ns) {
                 char label[32];
                 snprintf(label, sizeof label, "t=%.1f", run_seconds(now));
