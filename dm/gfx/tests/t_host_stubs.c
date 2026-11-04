@@ -8,4 +8,10 @@ __attribute__((weak)) int dm_stream_open(int width, int height) { (void)width; (
 __attribute__((weak)) int dm_stream_take(void **surface, uint32_t *gen, int *width, int *height) { (void)surface; (void)gen; (void)width; (void)height; return -1; }
 __attribute__((weak)) void dm_stream_put(int i, uint32_t gen, uint64_t ticket, uint64_t capture_ns, double pass_s, int drawn) { (void)i; (void)gen; (void)ticket; (void)capture_ns; (void)pass_s; (void)drawn; }
 __attribute__((weak)) void dm_audio_stream(void (*sink)(uint64_t time_ns, const int16_t *pcm, int frames)) { (void)sink; }
-__attribute__((weak)) void dm_focus_stream(int attached) { (void)attached; }
+__attribute__((weak)) void dm_focus_stream(int state) { (void)state; }
+__attribute__((weak)) void dm_app_suspend(int on) { (void)on; }
+__attribute__((weak)) void dm_audio_suspend(int on) { (void)on; }
+__attribute__((weak)) void dm_net_pad_set(int player, uint64_t buttons, int32_t lx, int32_t ly, int32_t rx, int32_t ry) { (void)player; (void)buttons; (void)lx; (void)ly; (void)rx; (void)ry; }
+__attribute__((weak)) void dm_net_pads(uint32_t mask) { (void)mask; }
+__attribute__((weak)) void dm_motion_set_net(int player, const float acc[3], const float rot[3], uint64_t sample_ns) { (void)player; (void)acc; (void)rot; (void)sample_ns; }
+__attribute__((weak)) void dm_motion_clear_net(int player) { (void)player; }

@@ -121,6 +121,24 @@ static int hub_expect_hello(int fd) {
     return 1;
 }
 
+static _Atomic int rec_seq, rec_suspend = -1, rec_focus = -1, rec_audio_suspend_at, rec_tap_off_at, rec_tap_on_at, rec_resume_at, rec_motion, rec_net_calls[DM_PLAYERS];
+static _Atomic uint32_t rec_pads_mask;
+static _Atomic uint64_t rec_btn[DM_PLAYERS], rec_motion_t;
+static _Atomic int32_t rec_lx[DM_PLAYERS], rec_ly[DM_PLAYERS];
+static float rec_acc[3];
+void dm_audio_stream(void (*sink)(uint64_t time_ns, const int16_t *pcm, int frames)) { atomic_store(sink ? &rec_tap_on_at : &rec_tap_off_at, ++rec_seq); }
+void dm_audio_suspend(int on) { if (on) rec_audio_suspend_at = ++rec_seq; }
+void dm_app_suspend(int on) { if (!on) rec_resume_at = ++rec_seq; rec_suspend = on; }
+void dm_focus_stream(int state) { rec_focus = state; }
+void dm_net_pad_set(int p, uint64_t b, int32_t lx, int32_t ly, int32_t rx, int32_t ry) { (void)rx; (void)ry; rec_btn[p] = b; rec_lx[p] = lx; rec_ly[p] = ly; rec_net_calls[p]++; }
+void dm_net_pads(uint32_t m) { rec_pads_mask = m; }
+void dm_motion_set_net(int p, const float acc[3], const float rot[3], uint64_t t) { (void)p; (void)rot; memcpy(rec_acc, acc, sizeof rec_acc); rec_motion_t = t; rec_motion++; }
+void dm_motion_clear_net(int p) { (void)p; }
+static int pad_seen(void) { return rec_motion > 0; }
+static int suspended(void) { return rec_suspend == 1; }
+static int resumed(void) { return rec_suspend == 0; }
+static int resumed_at_mac(void) { return rec_suspend == 0 && rec_focus == 0; }
+
 int main(void) { @autoreleasepool {
     char path[200]; snprintf(path, sizeof path, "%s/t_stream_sock.sock", getenv("TMPDIR") ?: "/tmp");
     if (strlen(path) > DMS_SUN_PATH_MAX) snprintf(path, sizeof path, "/tmp/t_stream_sock_%d.sock", getpid());
@@ -200,11 +218,56 @@ int main(void) { @autoreleasepool {
     hub_drain(fd, &a2, 5, 2000);
     CHECK("a new attach starts with parameter sets and a sync frame", a2.first_is_config && a2.first_frame_sync && a2.frames == 5);
 
+    uint8_t pads[12] = {0}, *pw = pads; dms_put32(&pw, 0x3); dms_put8(&pw, DMS_STYLE_PRO); dms_put8(&pw, DMS_STYLE_PRO);
+    hub_send(fd, DMS_PADS, 0, pads, sizeof pads);
+    uint8_t pad[48] = {0}, *w = pad + 8;
+    dms_put64(&w, DM_BTN_A | DM_BTN_SHAKE | 1ull << 40);
+    dms_put16(&w, (uint16_t)INT16_MIN); dms_put16(&w, 100); dms_put16(&w, 0); dms_put16(&w, (uint16_t)-5);
+    float acc[3] = {0, 0, -1}, rot[3] = {0, 0, 1}; dms_put(&w, acc, sizeof acc); dms_put(&w, rot, sizeof rot);
+    uint8_t other[24] = {2};
+    hub_send(fd, DMS_PAD, 0, other, sizeof other);
+    hub_send(fd, DMS_PAD, 0, other, 10);
+    hub_send(fd, DMS_PAD, DMS_PAD_MOTION, pad, (uint32_t)(w - pad));
+    CHECK("PAD reaches the player's controller", wait_until(pad_seen, 2000));
+    CHECK("PADS connects the hub's players", rec_pads_mask == 0x3);
+    CHECK("PAD keeps the NpadButton bits and the shake bit", rec_btn[0] == (DM_BTN_A | DM_BTN_SHAKE));
+    CHECK("PAD's sticks are clamped to +-32767", rec_lx[0] == -32767 && rec_ly[0] == 100);
+    CHECK("PAD's six-axis reaches the player's sensor with the hub's send time", rec_acc[2] == -1 && rec_motion_t != 0);
+    CHECK("a PAD for a player PADS did not connect, or a short one, is ignored", rec_net_calls[2] == 0);
+    st_tally quiet = {0};
+    hub_drain(fd, &quiet, 0, 1500);
+    CHECK("a player with no PAD for over a second is released, with no frame encoded meanwhile", rec_btn[0] == 0 && rec_net_calls[0] == 2 && quiet.frames == 0);
+
+    uint64_t pauses1 = atomic_load(&g_st_pauses);
+    hub_send(fd, DMS_DETACH, DMS_DETACH_PAUSE, NULL, 0);
+    CHECK("DETACH with pause suspends the game", wait_until(suspended, 2000) && encoder_off());
+    CHECK("the paused game sees the stream's paused focus", rec_focus == 2);
+    CHECK("the host's clock keeps pacing presents while the game is paused", atomic_load(&g_stream_pace));
+    CHECK("the Mac's audio is suspended before the tap lets go of it", rec_audio_suspend_at && rec_audio_suspend_at < rec_tap_off_at);
+    CHECK("DETACH releases the hub's controllers", rec_pads_mask == 0);
+    CHECK("a pause is counted", atomic_load(&g_st_pauses) == pauses1 + 1);
+    hub_attach(fd, 1280, 720, 8000);
+    CHECK("ATTACH resumes the paused game", wait_until(resumed, 2000) && encoder_on());
+    CHECK("the resumed game is in focus for the client", rec_focus == 1);
+    CHECK("the tap takes the sound before the game resumes", rec_tap_on_at < rec_resume_at);
+    hub_send(fd, DMS_DETACH, DMS_DETACH_PAUSE, NULL, 0);
+    CHECK("DETACH with pause suspends the game again", wait_until(suspended, 2000));
+    hub_send(fd, DMS_DETACH, 0, NULL, 0);
+    CHECK("DETACH without pause lets the paused game go on at the Mac with the window's focus", wait_until(resumed_at_mac, 2000));
+    CHECK("the game that goes on at the Mac is paced by the display link again", !atomic_load(&g_stream_pace));
+    hub_attach(fd, 1280, 720, 8000);
+    CHECK("ATTACH after that starts the encoder", wait_until(encoder_on, 2000));
+    st_tally a3 = {0};
+    capture_frames(flat, 5, &ticket);
+    hub_drain(fd, &a3, 5, 2000);
+    uint64_t pauses2 = atomic_load(&g_st_pauses);
+
     close(fd);
     capture_frames(flat, 5, &ticket);
     CHECK("a hub that dies while attached stops the encoder", wait_until(encoder_off, 2000));
-    CHECK("a hub that dies gives presents back to the display link", !atomic_load(&g_stream_pace));
-    CHECK("a hub that dies while attached asks for a pause", atomic_load(&g_st_pauses) == pauses0 + 1);
+    CHECK("a hub that dies while attached keeps the host's clock pacing the paused game", atomic_load(&g_stream_pace));
+    CHECK("a hub that dies while attached asks for a pause", atomic_load(&g_st_pauses) == pauses2 + 1);
+    CHECK("a hub that dies while attached pauses the game", wait_until(suspended, 2000) && rec_focus == 2);
     fd = accept_within(lfd, 3000);
     CHECK("dmhost connects again after the hub died", fd >= 0);
     if (fd >= 0) {
@@ -228,6 +291,7 @@ int main(void) { @autoreleasepool {
         CHECK("a hub of another protocol version is refused", eof);
         close(fd);
         CHECK("dmhost does not connect again to a hub it refused", accept_within(lfd, 2500) < 0);
+        CHECK("a refused hub lets the paused game go on at the Mac", wait_until(resumed_at_mac, 2000) && !atomic_load(&g_stream_pace));
     }
     close(lfd); unlink(path);
     printf("t_stream_sock: %d checks, %d failed\n", checks, failed);

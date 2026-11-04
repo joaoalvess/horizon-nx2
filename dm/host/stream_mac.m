@@ -10,6 +10,8 @@
 #include <sys/un.h>
 #include "dm.h"
 #include "stream_proto.h"
+#include "dm_input.h"
+#include <math.h>
 
 #ifndef DM_HOST_REV
 #define DM_HOST_REV "unknown"
@@ -55,8 +57,15 @@ static _Atomic int g_st_hub_hello, g_st_refused;
 static _Atomic uint32_t g_st_pads_mask;
 
 void dm_audio_stream(void (*sink)(uint64_t time_ns, const int16_t *pcm, int frames));
-void dm_focus_stream(int attached);
+void dm_focus_stream(int state);
 void mtl_stream_pace(int on);
+void dm_app_suspend(int on);
+void dm_audio_suspend(int on);
+
+static int g_st_paused;
+static _Atomic uint64_t g_st_pad_ns[DM_PLAYERS];
+static pthread_mutex_t g_st_pad_mu = PTHREAD_MUTEX_INITIALIZER;
+static dispatch_source_t g_st_pad_timer;
 
 static int st_env(const char *name, int fallback) { const char *e = getenv(name); return e && *e ? atoi(e) : fallback; }
 
@@ -165,6 +174,27 @@ static void st_window_log(void) {
         (unsigned long long)atomic_load(&g_st_encoder_drops), (unsigned long long)atomic_load(&g_st_failed), (unsigned long long)g_st_win.waited,
         (unsigned long long)atomic_load(&g_st_queue_drops));
     g_st_win.n = 0; g_st_win.bytes = 0; g_st_win.waited = 0; g_st_win.first_ns = 0;
+}
+
+static void st_pads_stale(uint64_t now) {
+    pthread_mutex_lock(&g_st_pad_mu);
+    uint32_t m = atomic_load(&g_st_pads_mask);
+    for (int p = 0; p < DM_PLAYERS; p++) {
+        uint64_t t = atomic_load(&g_st_pad_ns[p]);
+        if (!(m >> p & 1) || !t || now < t || now - t <= 1000000000ull) continue;
+        atomic_store(&g_st_pad_ns[p], 0);
+        dm_net_pad_set(p, 0, 0, 0, 0, 0); dm_motion_clear_net(p);
+        LOG("[stream] no PAD for player %d in over a second: its controller is released until the next one", p + 1);
+    }
+    pthread_mutex_unlock(&g_st_pad_mu);
+}
+
+static void st_pads_release(void) {
+    pthread_mutex_lock(&g_st_pad_mu);
+    if (atomic_exchange(&g_st_pads_mask, 0)) LOG("[stream] the hub's controllers are released");
+    for (int p = 0; p < DM_PLAYERS; p++) atomic_store(&g_st_pad_ns[p], 0);
+    dm_net_pads(0);
+    pthread_mutex_unlock(&g_st_pad_mu);
 }
 
 static void st_stats(uint64_t now) {
@@ -338,21 +368,26 @@ static void st_client(int on) {
     if (g_st_attached == on) return;
     g_st_attached = on;
     dm_audio_stream(on ? st_audio : NULL);
-    dm_focus_stream(on);
-    mtl_stream_pace(on);
+    dm_focus_stream(on ? 1 : g_st_paused ? 2 : 0);
+    mtl_stream_pace(on || g_st_paused);
 }
 
 static void st_detach(int pause, const char *why) {
+    __block int suspend = 0, resume = 0;
+    st_pads_release();
     dispatch_sync(g_st_encq, ^{
         int was = g_st_attached;
+        if (pause && was && !g_st_paused) { g_st_paused = suspend = 1; dm_audio_suspend(1); }
+        else if (!pause && g_st_paused) { g_st_paused = 0; resume = 1; mtl_stream_pace(0); }
         atomic_store(&g_st_sending, 0);
         st_client(0);
         st_stop();
         pthread_mutex_lock(&g_st_qmu); g_st_qgen = 0; st_drop_queued(1); pthread_mutex_unlock(&g_st_qmu);
-        if (!was) return;
-        if (pause) atomic_fetch_add(&g_st_pauses, 1);
-        LOG("[stream] %s: the encoder stopped%s", why, pause ? "; the game would pause, which this host does not do yet" : "");
+        if (suspend) atomic_fetch_add(&g_st_pauses, 1);
+        if (was) LOG("[stream] %s: the encoder stopped%s", why, suspend ? "; the game is paused until the next ATTACH" : "");
     });
+    if (suspend) { dm_app_suspend(1); LOG("[stream] the game is paused, as the Switch's HOME button pauses it"); }
+    if (resume) { dm_app_suspend(0); dm_focus_stream(0); LOG("[stream] %s: the paused game goes on at the Mac", why); }
 }
 
 static void st_attach(int w, int h, uint32_t codec, int kbps, int hz) {
@@ -363,6 +398,7 @@ static void st_attach(int w, int h, uint32_t codec, int kbps, int hz) {
         atomic_store(&g_st_sending, 1);
         st_client(1);
         LOG("[stream] a client %s: %dx%d at %d Hz, %d kbit/s", was ? "attached again" : "attached", w, h, hz, kbps);
+        if (g_st_paused) { g_st_paused = 0; dm_app_suspend(0); LOG("[stream] the paused game goes on for the client"); }
     });
 }
 
@@ -393,12 +429,34 @@ static int st_hub_message(const dms_header *h, uint8_t *p, uint32_t n) {
     case DMS_DETACH:
         st_detach(h->flags & DMS_DETACH_PAUSE, "the hub detached its client");
         return 1;
-    case DMS_PAD:
-        if (atomic_fetch_add(&g_st_pad_msgs, 1) == 0) LOG("[stream] the hub sends controller states; this host does not apply them yet");
+    case DMS_PAD: {
+        int p = dms_get8(&r); uint8_t pad[7]; dms_get(&r, pad, sizeof pad);
+        uint64_t b = dms_get64(&r); int32_t ax[4]; float acc[3] = {0}, rot[3] = {0};
+        for (int i = 0; i < 4; i++) { int16_t v = (int16_t)dms_get16(&r); ax[i] = v < -DM_STICK_MAX ? -DM_STICK_MAX : v; }
+        int motion = h->flags & DMS_PAD_MOTION;
+        if (motion) { dms_get(&r, acc, sizeof acc); dms_get(&r, rot, sizeof rot); }
+        if (r.bad) { LOG("[RED] stream: a short PAD from the hub (%u bytes), ignored", n); return 1; }
+        if (p >= DM_PLAYERS || !(atomic_load(&g_st_pads_mask) >> p & 1)) {
+            if (atomic_fetch_add(&g_st_pad_msgs, 1) == 0) LOG("[RED] stream: a PAD for player %d, whom the hub's PADS did not connect: ignored", p + 1);
+            return 1;
+        }
+        int finite = 1; for (int i = 0; i < 3; i++) finite &= isfinite(acc[i]) && isfinite(rot[i]);
+        pthread_mutex_lock(&g_st_pad_mu);
+        atomic_store(&g_st_pad_ns[p], now_ns());
+        dm_net_pad_set(p, b & (0xffffull | DM_BTN_SHAKE), ax[0], ax[1], ax[2], ax[3]);
+        if (motion && finite) dm_motion_set_net(p, acc, rot, h->sent_ns);
+        pthread_mutex_unlock(&g_st_pad_mu);
         return 1;
+    }
     case DMS_PADS: {
-        uint32_t m = dms_get32(&r);
-        if (!r.bad && atomic_exchange(&g_st_pads_mask, m) != m) LOG("[stream] the hub's controllers: players %#x; this host does not apply them yet", m);
+        uint32_t m = dms_get32(&r) & ((1u << DM_PLAYERS) - 1);
+        if (r.bad) { LOG("[RED] stream: a short PADS from the hub (%u bytes), ignored", n); return 1; }
+        pthread_mutex_lock(&g_st_pad_mu);
+        uint32_t old = atomic_exchange(&g_st_pads_mask, m);
+        for (int p = 0; p < DM_PLAYERS; p++) if ((m & ~old) >> p & 1) atomic_store(&g_st_pad_ns[p], now_ns());
+        dm_net_pads(m);
+        pthread_mutex_unlock(&g_st_pad_mu);
+        if (old != m) LOG("[stream] the hub's controllers: players %#x", m);
         return 1;
     }
     case DMS_LTR_ACK: {
@@ -498,7 +556,7 @@ static void *st_link(void *unused) {
         if (setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof sndbuf)) LOG("[RED] stream: SO_SNDBUF %d refused (%s)", sndbuf, strerror(errno));
         pthread_mutex_lock(&g_st_qmu); g_st_link_up = 1; g_st_link_broken = 0; g_st_until_refresh = 0; st_drop_queued(0); pthread_mutex_unlock(&g_st_qmu);
         atomic_store(&g_st_hub_hello, 0);
-        LOG("[stream] connected to the hub at %s", g_st_path);
+        LOG("[stream] connected to the hub at %s, %.2f s after the host started", g_st_path, (now_ns() - g_t0_ns) / 1e9);
         st_send_hello();
         pthread_t reader;
         if (pthread_create(&reader, NULL, st_reader, (void *)(intptr_t)fd)) die("stream: cannot start the socket reader thread");
@@ -516,7 +574,7 @@ static void *st_link(void *unused) {
         close(fd);
         pthread_mutex_lock(&g_st_qmu); g_st_link_up = 0; st_drop_queued(0); pthread_mutex_unlock(&g_st_qmu);
         st_detach(1, "the hub's socket closed while a client was attached");
-        if (atomic_load(&g_st_refused)) return NULL;
+        if (atomic_load(&g_st_refused)) { st_detach(0, "the hub was refused"); return NULL; }
         LOG("[stream] the hub's socket closed: connecting again once a second");
         sleep(1);
     }
@@ -564,7 +622,13 @@ int dm_stream_open(int width, int height) {
             memcpy(g_st_path, sock, strlen(sock) + 1);
             pthread_t t;
             if (pthread_create(&t, NULL, st_link, NULL)) LOG("[RED] stream: cannot start the socket thread");
-            else { pthread_detach(t); on = 1; }
+            else {
+                pthread_detach(t); on = 1;
+                g_st_pad_timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0));
+                dispatch_source_set_timer(g_st_pad_timer, dispatch_time(DISPATCH_TIME_NOW, 250 * NSEC_PER_MSEC), 250 * NSEC_PER_MSEC, 50 * NSEC_PER_MSEC);
+                dispatch_source_set_event_handler(g_st_pad_timer, ^{ st_pads_stale(now_ns()); });
+                dispatch_resume(g_st_pad_timer);
+            }
         }
     }
     return on ? ST_SLOTS : 0;
