@@ -624,6 +624,23 @@ static void handle_stats(dms_reader *reader) {
     if (options.verbose) note("STATS %s", last_stats.UTF8String);
 }
 
+static void handle_attach_result(dms_reader *reader) {
+    int ok = dms_get8(reader);
+    dms_get8(reader);
+    int width = dms_get16(reader), height = dms_get16(reader);
+    dms_get16(reader);
+    uint32_t codec = dms_get32(reader);
+    if (reader->bad) {
+        protocol_error("a short ATTACH_RESULT");
+        return;
+    }
+    NSString *why = [[NSString alloc] initWithBytes:reader->p length:(NSUInteger)(reader->end - reader->p) encoding:NSUTF8StringEncoding] ?: @"(not UTF-8)";
+    char name[5];
+    fourcc_text(codec, name);
+    if (ok) note("ATTACH_RESULT: the encoder started at %dx%d, %s%s%s", width, height, name, why.length ? "; " : "", why.UTF8String);
+    else note("ATTACH_RESULT: the ATTACH failed: %s", why.length ? why.UTF8String : "(no reason given)");
+}
+
 static void handle_message(dms_header header, uint8_t *payload, uint64_t received_ns) {
     dms_reader reader = {payload, payload + header.length, 0};
     if (!connection.hello_received && header.type != DMS_HELLO) {
@@ -636,6 +653,7 @@ static void handle_message(dms_header header, uint8_t *payload, uint64_t receive
     case DMS_VIDEO_FRAME: handle_video_frame(&reader, header, received_ns); break;
     case DMS_AUDIO: handle_audio(&reader, header, received_ns); break;
     case DMS_STATS: handle_stats(&reader); break;
+    case DMS_ATTACH_RESULT: handle_attach_result(&reader); break;
     default:
         if (options.verbose) note("skipped a message of type %u (%u bytes)", header.type, header.length);
         break;
