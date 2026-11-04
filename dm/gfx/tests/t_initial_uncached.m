@@ -1,6 +1,7 @@
 // Initial ASTC image data exists before registration in a CPU_UNCACHED or CPU_CACHED pool, with no flush.
 // Every mip must sample its literal color at first use. The storage stays the content: a later CPU write is
 // re-uploaded, and a new texture object over rewritten storage samples the new data, not the earlier upload.
+// IMAGE does not keep a block-compressed texture out (Pokemon Pokopia's icons).
 #include "../nvn/nvn_mtl.m"
 void *front_metal_layer(void) { return NULL; }
 module_t *module_of(const void *p) { (void)p; return NULL; }
@@ -30,12 +31,12 @@ static void expect(id<MTLTexture> image,int first,const char *label){
     CHECK("mip readback completes",cb.status==MTLCommandBufferStatusCompleted);
     float *out=result.contents;for(int lv=0;lv<3;lv++)for(int c=0;c<4;c++)CHECK(label,fabsf(out[lv*4+c]-(colors[(first+lv)%4][c]?1.f:0.f))<.001f);
 }
-static void run(int format, uint64_t serial, uint32_t pool_flags, int c0) {   // c0: the first fill's colour (distinct per run: a run's pool and storage may reuse an earlier run's addresses)
+static void run(int format, uint64_t serial, uint32_t pool_flags, int c0, uint32_t tex_flags) {   // c0: the first fill's colour (distinct per run: a run's pool and storage may reuse an earlier run's addresses)
     void *mem=NULL; if(posix_memalign(&mem,getpagesize(),65536))abort(); memset(mem,0,65536);
     pool_t pool={.magic=MAGIC('P','O','O','L'),.mem=mem,.size=65536,.flags=pool_flags};
     mtl_pool_add(mem,65536);
     tex_t t={.magic=MAGIC('T','E','X',0),.serial=serial,.pool=&pool,.mem=mem};
-    t.d=(nvn_texdesc){.target=NVN_TEXTURE_TARGET_2D,.format=format,.width=12,.height=12,.depth=1,.levels=3,.samples=1};
+    t.d=(nvn_texdesc){.target=NVN_TEXTURE_TARGET_2D,.format=format,.width=12,.height=12,.depth=1,.levels=3,.samples=1,.flags=tex_flags};
     nvn_tex_layout(&t.d,&t.L);
     fill(&t,mem,c0);
     mtl_tex_init(&t);mtl_sub_begin();id<MTLTexture> image=tex_mtl(&t);
@@ -53,5 +54,6 @@ static void run(int format, uint64_t serial, uint32_t pool_flags, int c0) {   //
 }
 int main(void){@autoreleasepool{mtl_init();
     const uint32_t uncached=NVN_MEMORY_POOL_FLAGS_CPU_UNCACHED|NVN_MEMORY_POOL_FLAGS_GPU_CACHED,cached=NVN_MEMORY_POOL_FLAGS_CPU_CACHED|NVN_MEMORY_POOL_FLAGS_GPU_CACHED;
-    run(NVN_FORMAT_RGBA_ASTC_6x6,9750,uncached,0);run(NVN_FORMAT_RGBA_ASTC_6x6_SRGB,9751,uncached,0);run(NVN_FORMAT_RGBA_ASTC_6x6,9752,cached,3);
+    run(NVN_FORMAT_RGBA_ASTC_6x6,9750,uncached,0,0);run(NVN_FORMAT_RGBA_ASTC_6x6_SRGB,9751,uncached,0,0);run(NVN_FORMAT_RGBA_ASTC_6x6,9752,cached,3,0);
+    run(NVN_FORMAT_RGBA_ASTC_6x6,9753,uncached,1,NVN_TEXTURE_FLAGS_IMAGE);   // IMAGE on a block-compressed format: shaders cannot write it (Pokemon Pokopia's icons)
     printf("t_initial_uncached: %d checks, %d failed\n",checks,failed);return failed!=0;}}
