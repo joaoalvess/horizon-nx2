@@ -69,7 +69,7 @@ HorizonHub keeps its files in `~/Library/Application Support/HorizonHub/games`: 
 
 | Stage | Acceptance | State |
 |---|---|---|
-| M1 import | `swift build` and `swift test` pass with the 153 tests; XcodeGen writes the project; both apps build unsigned with no warnings | done (2026-11-04): 153 tests pass (HubKit 49, HorizonPlayer 19, HorizonLink 85); both apps build unsigned with no compiler warning |
+| M1 import | `swift build` and `swift test` pass with the 153 tests; XcodeGen writes the project; both apps build unsigned with no warnings | done (2026-11-04): 156 tests pass (HubKit 51, HorizonPlayer 19, HorizonLink 86): the 153 imported and 3 for the fixes from the pull request's review; both apps build unsigned with no compiler warning |
 | M2 HorizonHub as its own app | menu bar, Open at Login, single instance, closing the game on quit, games window, TV section; builds and tests pass | done (2026-11-04): builds and tests pass; first run on the Mac waits for the install (see [Install and first start](#install-and-first-start)) |
 | M3 HorizonTV | new name and identity; builds for the tvOS Simulator with no warnings | done (2026-11-04) |
 | M4 repository | `.gitignore`, `dm/tools/impact_map.tsv`, `scripts/install_hub.sh`, `horizon-fakestream` against `stream_probe` with no decode error and no gap | done (2026-11-04): `install_hub.sh` written, not run; 40 s of `dk_s2_play.h264` through `stream_probe`: 2,358 frames at 58.9 fps, 0 decode errors, 0 frame-number gaps, 0 audio gaps, 0 protocol errors |
