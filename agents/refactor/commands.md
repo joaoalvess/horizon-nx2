@@ -15,7 +15,7 @@ Game IDs and the guard's `--game` names (use these literal names, so a `STOP_<na
 
 ## Build
 
-- Host: `make -C dm/host GAME=<id> dmhost`. It writes one `dm/host/dmhost`, for the last game built. Copy each one to `<work>/runs/hosts/<name>/dmhost`, with its dSYM.
+- Host: `make -C dm/host -j4 GAME=<id> dmhost` (since `71bb3bb2` one object per source under `dm/host/gen/<id>/obj/`, so `-j` compiles in parallel and an edit recompiles only its includers; `-j4` while the user is on the Mac). It writes one `dm/host/dmhost`, for the last game built. Copy each one to `<work>/runs/hosts/<name>/dmhost`, with its dSYM.
 - Replayer: `make -B -C dm/gfx/tests GAME=<id> nvn_replay`. `-B` is required: the target has no game stamp, so without it a second game keeps the first game's binary. Check it with `strings -a dm/gfx/tests/nvn_replay | grep -x <id>` before copying it to `<work>/runs/hosts/<name>/nvn_replay`.
 - Per-commit binaries: after each commit on `refactor`, while the tree is clean, the main thread builds and copies the host and the replayer of Pokopia and DK to `<work>/runs/hosts/head-<hash>/`. Implementers compare against the previous `head-<hash>`, boots use these copies, never `dm/host/dmhost`.
 - Graphics tests: the rules that include `nvn_mtl.m` do not list it as a dependency, so build with `-B`, and run without it (`-B` passes into the nested `check_*` makes and builds everything twice):
