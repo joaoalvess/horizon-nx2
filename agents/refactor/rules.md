@@ -60,7 +60,7 @@ Every agent follows these rules. They come from the user, `CLAUDE.md` and incide
 
 ## Subagents
 
-- One agent edits source files at a time. Reviewers and searchers are read-only and may run in parallel.
+- One agent edits source files at a time, except two implementers the user put in parallel on disjoint files (from 2026-11-04 11:45: S3a in `dm/gfx`, HT in `dm/host/hle_thread.c`). Each one then builds its candidate binaries from a plain export of HEAD plus its own patch (`git archive HEAD | tar -x -C /Volumes/Hangar/Games/overnight/src-<item>`, then `git apply` its patch there), never from the shared tree, so the other's unfinished change stays out of its checks. Reviewers and searchers are read-only and may run in parallel.
 - A subagent writes only its own report under `reports/` (and `captures.md` for the capture subagent). Status files have one writer, the main thread.
 - A reviewer gets the diff and the code, never the implementer's reasoning.
 - The night file is the plan the user asked to run on 2026-11-04, and the local commits on `refactor` it lists are requested. Nobody asks the user anything during an unattended run. A decision that belongs to the user goes under Open in the night file, and work moves on.
