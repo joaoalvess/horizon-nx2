@@ -1,0 +1,82 @@
+name: Horizon
+options:
+  deploymentTarget:
+    macOS: "15.0"
+    tvOS: "18.0"
+  createIntermediateGroups: true
+  developmentLanguage: en
+packages:
+  HorizonKit:
+    path: .
+targets:
+  HorizonHub:
+    type: application
+    platform: macOS
+    sources: [HorizonHub]
+    configFiles:
+      Debug: Config/Signing.xcconfig
+      Release: Config/Signing.xcconfig
+    dependencies:
+      - package: HorizonKit
+        product: HubKit
+      - package: HorizonKit
+        product: HorizonLink
+    info:
+      path: HorizonHub/Info.plist
+      properties:
+        NSLocalNetworkUsageDescription: HorizonHub streams the Mac's games to the Apple TV over the home network.
+        NSBonjourServices:
+          - _horizonhub._tcp
+    settings:
+      base:
+        PRODUCT_NAME: HorizonHub
+        PRODUCT_BUNDLE_IDENTIFIER: dev.joaoalvess.horizon.hub
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        SWIFT_VERSION: "6.0"
+        ENABLE_APP_SANDBOX: NO
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_LSUIElement: YES
+        INFOPLIST_KEY_CFBundleDisplayName: HorizonHub
+        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.games
+        INFOPLIST_KEY_NSHumanReadableCopyright: ""
+        INFOPLIST_KEY_NSRemovableVolumesUsageDescription: HorizonHub opens the games and saves on the Hangar SSD.
+  HorizonTV:
+    type: application
+    platform: tvOS
+    sources: [HorizonTV]
+    configFiles:
+      Debug: Config/Signing.xcconfig
+      Release: Config/Signing.xcconfig
+    dependencies:
+      - package: HorizonKit
+        product: HorizonLink
+      - package: HorizonKit
+        product: HorizonPlayer
+    info:
+      path: HorizonTV/Info.plist
+      properties:
+        CFBundleDisplayName: HorizonTV
+        UILaunchScreen: {}
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+          UISceneConfigurations:
+            UIWindowSceneSessionRoleApplication:
+              - UISceneConfigurationName: Default
+                UISceneDelegateClassName: $(PRODUCT_MODULE_NAME).SceneDelegate
+        NSLocalNetworkUsageDescription: HorizonTV receives the Mac's games over the home network.
+        NSBonjourServices:
+          - _horizonhub._tcp
+        GCSupportsControllerUserInteraction: true
+        GCSupportedGameControllers:
+          - ProfileName: ExtendedGamepad
+          - ProfileName: MicroGamepad
+    settings:
+      base:
+        PRODUCT_NAME: HorizonTV
+        PRODUCT_BUNDLE_IDENTIFIER: dev.joaoalvess.horizon.tv
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        SWIFT_VERSION: "6.0"
+        TARGETED_DEVICE_FAMILY: "3"
+        GENERATE_INFOPLIST_FILE: YES

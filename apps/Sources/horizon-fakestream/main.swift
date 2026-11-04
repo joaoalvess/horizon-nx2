@@ -1,0 +1,1 @@
+FakeStream.main()
