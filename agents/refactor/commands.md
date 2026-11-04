@@ -10,6 +10,7 @@ Game IDs and the guard's `--game` names (use these literal names, so a `STOP_<na
 
 - A Bash call stops at 120 s by default and 600 s at most. Run every `guard.py` call, every build of more than a few files and every full test suite with `run_in_background`, and wait for its notification.
 - Never kill a guard. The game runs in its own session (`guard.py` line 82), so a killed guard leaves `dmhost` running unguarded. After any guard that was cut off, check `pgrep -x dmhost`; a survivor gets `kill`, then `STOP_ALL` if it survives that.
+- Heavy jobs: `python3 /Volumes/Hangar/Games/overnight/heavy.py [--boot] <guard options> -- <command>` (`rules.md`, Worktrees): the guard, then a wait for 45 % free memory (50 % with `--boot`), then the command, at background priority unless `--boot`. `HEAVY_MEM_MIN` overrides the threshold.
 - To stop a guarded run early (the guard reads `STOP_*` only before it starts): find the child as the guard's direct child, `pgrep -P <guard pid>`, and `kill -TERM -- -<child pgid>`. Never pick it by `pgrep -f` with the command's text: the guard's own command line contains it (2026-11-04 17:10, a DK bench: that killed the guard, and the orphaned `bench.py` and `dmhost` had to be stopped by hand).
 
 ## Build
