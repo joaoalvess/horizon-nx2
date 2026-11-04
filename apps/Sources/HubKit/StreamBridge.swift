@@ -76,7 +76,7 @@ public final class StreamBridge: @unchecked Sendable {
     private var socket: StreamSocket?
     private var sender: VideoSender
     private var hello: DMStream.HostHello?
-    private var attached: (peer: LinkPeer, attach: DMStream.Attach)?
+    private var attached: (peer: LinkPeer, attach: DMStream.Attach, pads: DMStream.Pads?)?
     private var lastFeedbackNs: UInt64 = 0
     private var refreshSeen: [UUID: UInt32] = [:]
     private var ackedTokens: [Int64] = []
@@ -275,6 +275,7 @@ public final class StreamBridge: @unchecked Sendable {
         if let hello, !hello.codecs.contains(attach.codec), let first = hello.codecs.first { attach.codec = first }
         sender.resendConfiguration()
         socket?.send(.attach(attach))
+        if let pads = attached?.pads { socket?.send(.pads(pads)) }
         log?.event("attach", "\(attach.width)x\(attach.height)@\(attach.refreshHz) kbps=\(attach.bitrateKbps)")
     }
 
@@ -326,11 +327,12 @@ public final class StreamBridge: @unchecked Sendable {
     private func clientMessage(_ peer: LinkPeer, _ message: ControlMessage) {
         switch message {
         case .attach(let attach):
-            if let previous = attached, previous.peer !== peer {
+            let previous = attached
+            if let previous, previous.peer !== peer {
                 server.send(.notice("Another device took over the game"), to: previous.peer)
                 previous.peer.pacer.clearBulk()
             }
-            attached = (peer, attach)
+            attached = (peer, attach, previous?.peer === peer ? previous?.pads : nil)
             status.stalled = false
             status.attachResult = nil
             lastFeedbackNs = LinkClock.nowNs()
@@ -357,6 +359,7 @@ public final class StreamBridge: @unchecked Sendable {
             gamesChanged()
         case .pads(let pads):
             guard attached?.peer === peer else { return }
+            attached?.pads = pads
             lastPad.removeAll()
             socket?.send(.pads(pads))
         case .bitrate(let kbps):

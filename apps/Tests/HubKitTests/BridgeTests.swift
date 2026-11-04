@@ -45,13 +45,13 @@ struct BridgeRig {
     let status = Box(BridgeStatus())
     let hubs = Box<[Data: Data]>([:])
 
-    init(directory: String? = nil, identity: LinkIdentity = LinkIdentity()) throws {
+    init(directory: String? = nil, identity: LinkIdentity = LinkIdentity(), feedbackTimeoutNs: UInt64 = 600_000_000) throws {
         self.directory = try directory ?? makeShortDirectory()
         var server = LinkServer.Settings(hubName: "Test Mac")
         server.advertise = false
         var settings = BridgeSettings(socketPath: self.directory + "/s.sock", server: server)
         settings.logDirectory = self.directory + "/logs"
-        settings.feedbackTimeoutNs = 600_000_000
+        settings.feedbackTimeoutNs = feedbackTimeoutNs
         let me = ProcessIdentity.of(getpid())
         let opened = self.opened
         let games = HubGames(
@@ -251,6 +251,55 @@ struct BridgeTests {
         try await waitUntil { host.count { if case .pads = $0 { true } else { false } } == 2 }
         client.sendPad(PadPacket(sequence: 1, pad: DMStream.Pad(player: 0, buttons: DMStream.Button.b)))
         try await waitUntil { host.count { if case .pad(let pad) = $0 { pad.buttons == DMStream.Button.b } else { false } } == 1 }
+    }
+
+    @Test func controllersChosenBeforeTheGameStartsReachIt() async throws {
+        let rig = try BridgeRig()
+        defer { rig.remove() }
+        let events = Box<[LinkClient.Event]>([])
+        let client = rig.client(events: events)
+        defer { client.disconnect() }
+        try await rig.pair(client, events: events)
+        let one = DMStream.Pads(mask: 1, styles: [DMStream.styleProController] + Array(repeating: 0, count: 7))
+        client.send(.attach(DMStream.Attach(refreshHz: 60, width: 1920, height: 1080, codec: DMStream.Codec.avc1.rawValue, bitrateKbps: 0)))
+        client.send(.pads(one))
+        client.send(.attach(DMStream.Attach(refreshHz: 60, width: 1920, height: 1080, codec: DMStream.Codec.avc1.rawValue, bitrateKbps: 20000)))
+        client.send(.open(profile: "test", game: "dk"))
+        try await waitUntil { rig.opened.current == ["test/dk"] }
+
+        let host = try HostPeer(path: rig.bridge.settings.socketPath)
+        defer { host.close() }
+        try await start(host, rig: rig)
+        try await waitUntil { host.count { if case .pads(let pads) = $0 { pads == one } else { false } } == 1 }
+        let messages = host.received.current
+        let attach = try #require(messages.firstIndex { if case .attach(let attach) = $0 { attach.bitrateKbps == 20000 } else { false } })
+        let pads = try #require(messages.firstIndex { if case .pads = $0 { true } else { false } })
+        #expect(attach < pads)
+        client.sendPad(PadPacket(sequence: 1, pad: DMStream.Pad(player: 0, buttons: DMStream.Button.a)))
+        try await waitUntil { host.count { if case .pad(let pad) = $0 { pad.buttons == DMStream.Button.a } else { false } } == 1 }
+    }
+
+    @Test func controllersComeBackWhenAStalledClientResumes() async throws {
+        let rig = try BridgeRig(feedbackTimeoutNs: 1_000_000)
+        defer { rig.remove() }
+        let events = Box<[LinkClient.Event]>([])
+        let client = rig.client(events: events)
+        defer { client.disconnect() }
+        try await rig.pair(client, events: events)
+        let host = try HostPeer(path: rig.bridge.settings.socketPath)
+        defer { host.close() }
+        try await start(host, rig: rig)
+        let one = DMStream.Pads(mask: 1, styles: [DMStream.styleProController] + Array(repeating: 0, count: 7))
+        client.send(.attach(DMStream.Attach(refreshHz: 60, width: 1920, height: 1080, codec: DMStream.Codec.avc1.rawValue, bitrateKbps: 0)))
+        client.send(.pads(one))
+        try await waitUntil {
+            let messages = host.received.current
+            let pads = messages.indices.filter { if case .pads(let pads) = messages[$0] { pads == one } else { false } }
+            guard pads.count >= 2, let last = pads.last,
+                  let detach = messages.firstIndex(where: { if case .detach(pause: true) = $0 { true } else { false } })
+            else { return false }
+            return detach < last
+        }
     }
 
     @Test func aSilentClientPausesTheGame() async throws {
