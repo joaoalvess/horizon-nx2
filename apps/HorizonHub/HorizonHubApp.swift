@@ -61,6 +61,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 final class LoginItem {
     private(set) var enabled = SMAppService.mainApp.status == .enabled
     private(set) var error: String?
+    @ObservationIgnored private var timer: Timer?
+
+    init() {
+        timer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.refresh() }
+        }
+    }
+
+    func refresh() {
+        enabled = SMAppService.mainApp.status == .enabled
+    }
 
     var available: Bool {
         let path = Bundle.main.bundlePath
@@ -78,7 +89,7 @@ final class LoginItem {
         } catch {
             self.error = "Could not change Open at Login: \(error.localizedDescription)"
         }
-        enabled = SMAppService.mainApp.status == .enabled
+        refresh()
     }
 }
 
