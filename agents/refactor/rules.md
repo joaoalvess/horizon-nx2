@@ -39,7 +39,7 @@ Every agent follows these rules. They come from the user, `CLAUDE.md` and incide
 ## Git
 
 - Work on branch `refactor`, created from `main`.
-- Commits are local, in English, in the repository's conventional form: `perf(<scope>): <what>`, `build(<scope>): ...`, `fix(<scope>): ...`, `test(<scope>): ...`, `docs(agents): ...` or `docs(reference): ...`, with a `Catalog: <ID>` trailer for a catalog item. No Co-Authored-By and no Claude attribution.
+- Commits are local, in English, in the repository's conventional form: `perf(<scope>): <what>`, `refactor(<scope>): ...` (a move or a change of structure that keeps the command stream identical), `build(<scope>): ...`, `fix(<scope>): ...`, `test(<scope>): ...`, `docs(agents): ...` or `docs(reference): ...`, with a `Catalog: <ID>` trailer for a catalog item. No Co-Authored-By and no Claude attribution.
 - `git add` names each file.
 - Never commit `docs/env_switches.tsv`, `PERF_M4.md`, `POKOPIA.md` or `STREAMING.md` (the user's uncommitted work).
 - A file in `agents/refactor/` is committed together with the item whose state it records, or at a milestone.
