@@ -92,8 +92,8 @@ struct LinkSessionTests {
 
         let welcome = ControlMessage.welcome(Welcome(udpPort: 50000, sessionId: 7, hubName: "MacBook Air"))
         #expect(try pair.client.receive(pair.hub.seal(welcome)).count == 1)
-        let events = try pair.hub.receive(pair.client.seal(.open(profile: "joao", game: "dk")))
-        guard case .control(.open(profile: "joao", game: "dk")) = events.first else {
+        let events = try pair.hub.receive(pair.client.seal(.open(profile: "zoe", game: "dk")))
+        guard case .control(.open(profile: "zoe", game: "dk")) = events.first else {
             Issue.record("the hub did not get the open request")
             return
         }

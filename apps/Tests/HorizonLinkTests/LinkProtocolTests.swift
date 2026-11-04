@@ -23,17 +23,17 @@ struct LinkProtocolTests {
         let messages: [ControlMessage] = [
             .welcome(Welcome(udpPort: 52000, sessionId: 0xDEAD_BEEF, hubName: "MacBook Air")),
             .catalog(
-                profiles: [LinkProfile(id: "joao", name: "João", nick: "Joao")],
+                profiles: [LinkProfile(id: "zoe", name: "Zoë", nick: "Zoe")],
                 games: [
                     LinkGame(id: "mkw", title: "Mario Kart World", status: .running),
                     LinkGame(id: "dk", title: "DK", status: .blocked, detail: "GPU error"),
                 ]
             ),
-            .state(LinkState(game: "mkw", title: "Mario Kart World", profile: "joao", streaming: true, paused: false)),
+            .state(LinkState(game: "mkw", title: "Mario Kart World", profile: "zoe", streaming: true, paused: false)),
             .state(LinkState()),
             .attach(DMStream.Attach(refreshHz: 60, width: 1920, height: 1080, codec: DMStream.Codec.avc1.rawValue, bitrateKbps: 25000)),
             .detach(pause: true),
-            .open(profile: "joao", game: "dk"),
+            .open(profile: "zoe", game: "dk"),
             .close,
             .pads(DMStream.Pads(mask: 3, styles: [1, 1, 0, 0, 0, 0, 0, 0])),
             .bitrate(20000),

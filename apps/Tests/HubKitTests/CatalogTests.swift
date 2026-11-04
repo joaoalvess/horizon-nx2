@@ -8,7 +8,7 @@ struct CatalogTests {
       "version": 1,
       "state": "/Volumes/Hangar/Games/overnight/state",
       "profiles": [
-        { "id": "joao", "name": "João", "nick": "Joao", "saves": { "mkw": "/Games/mkw-work/run/save" } },
+        { "id": "zoe", "name": "Zoë", "nick": "Zoe", "saves": { "mkw": "/Games/mkw-work/run/save" } },
         { "id": "test-j1", "name": "Test J1", "nick": "Test", "sync": { "mkw": "/Sync/test" } }
       ],
       "games": [
@@ -31,7 +31,7 @@ struct CatalogTests {
     @Test func buildsTheExactLaunchEnvironment() throws {
         let catalog = try GameCatalog.decode(Data(Self.json.utf8), source: "test")
         let game = try #require(catalog.game("mkw"))
-        let joao = try #require(catalog.profile("joao"))
+        let zoe = try #require(catalog.profile("zoe"))
         let tester = try #require(catalog.profile("test-j1"))
 
         let environment = catalog.launchEnvironment(profile: tester, game: game, streamSocket: "/support/stream.sock")
@@ -49,10 +49,10 @@ struct CatalogTests {
         ]
         #expect(Set(environment.keys).subtracting(["USER", "TMPDIR"]) == expected)
 
-        let joaoEnvironment = catalog.launchEnvironment(profile: joao, game: game, streamSocket: "/s")
-        #expect(joaoEnvironment["DM_SAVE"] == "/Games/mkw-work/run/save")
-        #expect(joaoEnvironment["DM_SAVE_SYNC"] == "0")
-        #expect(catalog.hasExplicitSave(profile: joao, game: game))
+        let zoeEnvironment = catalog.launchEnvironment(profile: zoe, game: game, streamSocket: "/s")
+        #expect(zoeEnvironment["DM_SAVE"] == "/Games/mkw-work/run/save")
+        #expect(zoeEnvironment["DM_SAVE_SYNC"] == "0")
+        #expect(catalog.hasExplicitSave(profile: zoe, game: game))
         #expect(!catalog.hasExplicitSave(profile: tester, game: game))
     }
 
