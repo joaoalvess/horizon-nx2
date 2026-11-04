@@ -31,7 +31,7 @@ public final class PairingStore: @unchecked Sendable {
     }
 
     public static func identity(keychain: Keychain = PairingStore.keychain) throws -> LinkIdentity {
-        if let stored = try keychain.read(interactive: false) {
+        if let stored = try keychain.read() {
             guard let raw = Data(base64Encoded: stored) else { throw GamesError.unavailable("the link identity in the keychain is not base64") }
             return try LinkIdentity(rawRepresentation: raw)
         }

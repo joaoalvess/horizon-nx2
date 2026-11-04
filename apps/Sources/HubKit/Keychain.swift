@@ -23,8 +23,7 @@ public struct Keychain: Sendable {
         ]
     }
 
-    public func read(interactive: Bool = true) throws -> String? {
-        if !interactive { SecKeychainSetUserInteractionAllowed(false) }
+    public func read() throws -> String? {
         var query = baseQuery
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
@@ -44,20 +43,5 @@ public struct Keychain: Sendable {
         query[kSecValueData as String] = Data(secret.utf8)
         let status = SecItemAdd(query as CFDictionary, nil)
         guard status == errSecSuccess else { throw Failure.status(status) }
-    }
-
-    public func delete() throws {
-        let status = SecItemDelete(baseQuery as CFDictionary)
-        guard status == errSecSuccess || status == errSecItemNotFound else { throw Failure.status(status) }
-    }
-
-    public static func generateSecret(byteCount: Int = 32) throws -> String {
-        var bytes = [UInt8](repeating: 0, count: byteCount)
-        let status = SecRandomCopyBytes(kSecRandomDefault, byteCount, &bytes)
-        guard status == errSecSuccess else { throw Failure.status(status) }
-        return Data(bytes).base64EncodedString()
-            .replacingOccurrences(of: "+", with: "-")
-            .replacingOccurrences(of: "/", with: "_")
-            .replacingOccurrences(of: "=", with: "")
     }
 }
