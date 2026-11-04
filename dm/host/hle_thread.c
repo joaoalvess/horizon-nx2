@@ -73,6 +73,7 @@ typedef struct thr {
     struct thr *all;           // All-threads chain (for the state dump)
     int last_svc; uint64_t last_lr;
     int closed;                // Handle closed: the object is freed only when this holds together with exited (Horizon: the thread object goes away with the last reference)
+    int pins;
     uint64_t nsvc;             // SVC count (for the state dump)
     uint64_t nyield, nyield_seen, nbackoff, nbackoff_seen;   // Yields (SleepThread 0/-1/-2) and those the back-off turned into short sleeps, with both counts at the last power report (dm_yield_top)
     uint64_t nspin, nspin_seen, spin_site; const char *spin_mod;   // Spin wait passes (dm_spin_wait; those that yield count in nyield too) and where the last one was
@@ -400,7 +401,7 @@ static void thread_exit(thr_t *t) {
     t->exited = 1; hand_wake(t);
     wake_sync_waiters(t);   // Synchronization waiters on this thread re-check
     pthread_setspecific(g_keythr, NULL);
-    if (t->closed) thr_free(t);
+    if (t->closed && !t->pins) thr_free(t);
     pthread_mutex_unlock(&G);
     cv_flush();
     pthread_exit(NULL);
@@ -1044,6 +1045,7 @@ static int svc_thread_impl(int num, uint64_t *regs) {
             int st = atomic_fetch_or(&t->svc_state, 2);
             if (!t->started || t->exited || (st & 1)) t->paused = 1;
             uint64_t t0 = now_ns(); int warned = 0;
+            t->pins++;
             while (!t->paused && !t->exited) {
                 pthread_mutex_unlock(&G); pthread_kill(t->pt, SIGUSR2); pthread_mutex_lock(&G);
                 if (t->paused || t->exited) break;
@@ -1051,6 +1053,7 @@ static int svc_thread_impl(int num, uint64_t *regs) {
                 pthread_cond_timedwait(&t->pcv, &G, &dl);
                 if (!warned && now_ns() - t0 > 1000000000ull) { warned = 1; LOG("[RED] thread %#x still not suspended after more than 1 second (stuck in host code?)", t->handle); }
             }
+            if (!--t->pins && t->closed && t->exited) thr_free(t);
         } else { atomic_store(&t->pause_req, 0); atomic_fetch_and(&t->svc_state, ~2); pthread_cond_broadcast(&t->pcv); }
         pthread_mutex_unlock(&G);
         { static int n; if (n++ < 4) LOG("SetThreadActivity %#x → %s (%s)", (uint32_t)regs[0], act ? "pause" : "resume", r ? "failed" : "ok"); }
@@ -1211,7 +1214,7 @@ static int svc_thread_impl(int num, uint64_t *regs) {
             thr_t *t = g_h[i].obj;
             g_h[i].type = O_FREE; g_h[i].obj = NULL;
             t->closed = 1;
-            if (t->exited) thr_free(t);
+            if (t->exited && !t->pins) thr_free(t);
         }
         pthread_mutex_unlock(&G);
         regs[0] = 0; return 1;

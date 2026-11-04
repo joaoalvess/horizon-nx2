@@ -230,7 +230,7 @@ The nesting graph the analysis found (226 ordered pairs over 80 locks, call-grap
 | `g_post_mu` | `post_complete` (`:1592-1598`), released in `post_run` (`:1583`) | the post-ops of a fence, including mirror readbacks (`mirror_rb_land`, `:1578`) | yes |
 | movie `dmu` | `md_pump` (`hle_movie.c:459`) | decoding and the guest event signals; taken with `dm_host_lock` for that reason (`hle_thread.c:206-209`; `docs/reference/threads.md`, "A host lock held across a same-core handoff") | yes |
 | a video decoder's `mu`, `g_spt_mu`, `g_mq_lock` | `cv_dec_reset` (`hle_codec_video.c:284`), `spt_fire` (`:79`), `mq_ev_sync` (`hle_oe.c:32`) | `hle_signal_system_event`, which takes `G` and can wake guest threads | yes |
-| `G` | `thr_free` (since H3) | a `sched_yield` spin until every queued signal to the freed thread has gone out (`cv_pend` 0); it ends because no `cv_flush` needs `G` | yes (H3 review) |
+| `G` | `thr_free` (since H3) | a `sched_yield` spin until every queued signal to the freed thread has gone out (`cv_pend` 0); it ends because no `cv_flush` needs `G`; callers: `thread_exit`, CloseHandle and, since H9, SetThreadActivity after its pause loop | yes (H3 review) |
 | `routeLock` | `dm_haptics_apple_controller` (`haptics_apple.m:376-380`) | `dispatch_sync` on the rumble queue | yes |
 | `g_path_lock`, `g_lock` (fs) | `h_fs_Commit` (`hle_fs.c:686-689`) | the save commit: `clonefile`, `renamex_np`, `rm_tree` (`hle_fs.c:674-676`) | yes |
 
@@ -243,7 +243,7 @@ The nesting graph the analysis found (226 ordered pairs over 80 locks, call-grap
 | movie `mu` → movie `wmu` | `md_pump` (`hle_movie.c:465-466`) | released at `:465` before `md_job` (`:466`) |
 | `g_path_lock` → `G` | `h_fs_MountRom` `hle_fs.c:436`, `h_fs_Commit` `:685`, `h_fs_CommitList` `:699`, `h_fs_OpenFile` `:728`, `h_fs_CreateFile` `:843`, `h_fs_DeleteFile` `:853` | `dm_thread_service_request` is the first statement of each of these functions, before its `PATH_LOCK` (checked at each line) |
 | `g_path_lock` → `g_path_lock` | `h_fs_MountRom` `hle_fs.c:438` (`mount`), `h_fs_OpenFile` `:730`, `h_fs_CreateFile` `:844` and others (`img_path`) | `img_path` (`hle_fs.c:176`) and `mount_ex` (`:190`) take `PATH_LOCK` in their own scope and release it on return; the analysis does not see the cleanup release |
-| `G` → `G` | SetThreadActivity in `svc_thread_impl` `hle_thread.c:1001` | unlock, then lock again |
+| `G` → `G` | SetThreadActivity in `svc_thread_impl` `hle_thread.c:1001` | unlock, then lock again; the target is pinned across the release since H9 |
 | movie `mu` → `mu`, `wmu` → `wmu`; `g_mu` (`save_sync.c`) → `g_mu`; `m` → `m` | `hle_movie.c:465-467`, `:443`; `save_sync.c:467-469`; `hle_thread.c:211-213` | unlock (or a failed try) before the lock again |
 | every `dm_host_mutex_lock` caller → itself | `dm.h:15-18` | the try failed (`EBUSY`), so the following lock is the first |
 

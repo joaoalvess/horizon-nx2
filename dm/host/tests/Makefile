@@ -248,6 +248,12 @@ handoff-wake: $(B)/t_handoff_wake
 	$(B)/t_handoff_wake
 	$(B)/t_handoff_wake --all-peers
 run: handoff-wake
+$(B)/t_pause_exit: t_pause_exit.c t_condvar_stub.c ../hle_thread.c ../dm.h $(GAME_H) | $(B)
+	$(CLANG) -O2 -flto=thin -g -Wall -Werror -Wno-unused-function -DDM_TEST_THREAD_ENTER -I.. $(GINC) -o $@ t_pause_exit.c t_condvar_stub.c
+.PHONY: pause-exit
+pause-exit: $(B)/t_pause_exit
+	$(B)/t_pause_exit
+run: pause-exit
 # the Vorbis tests build their own packets and need no game profile (they build without GAME)
 $(B)/t_vorbis: t_vorbis.c ../../third_party/stb_vorbis/stb_vorbis.c | $(B)
 	$(CLANG) -O2 -flto=thin -g -Wno-unused-function -Wno-tautological-compare -o $@ t_vorbis.c

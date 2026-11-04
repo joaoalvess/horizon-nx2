@@ -51,7 +51,7 @@ Result codes: `R_TIMEOUT` 0xEA01, `R_CANCELLED` 0xEC01, `R_BAD_HANDLE` 0xE401, `
 | `native_wait` | Depth of native HLE waits | `:66` |
 | `host_owned` | Made by `dm_guest_thread_spawn` | `:67` |
 | `wseq`, `next`, `pprev`, `all` | Wait order, wait chain (with its back-link, H2), all-threads chain | `:68-70` |
-| `closed` | Handle closed; freed when also exited | `:72` |
+| `closed`, `pins` | Handle closed; since H9, the SetThreadActivity pauses in progress on this thread (`G` held). Freed when closed and exited and no pause pins it | `:72`; `pins` after `closed` |
 | `nsvc`, `nyield`, `nbackoff`, `nspin`, run fields | Counters and yield-run, spin-run and poll-run state | `:73-78` |
 | `mport` | Mach port, for CPU time | `:79` |
 | `qos_pending`, `qos` | Deferred QoS change and the current class | `:80-81` |
@@ -92,10 +92,10 @@ A guest thread exits with `pthread_exit` from inside the SVC (`:362`), so all of
 3. StartThread, SVC 0x09 (`:948-958`): `started` = 1, queue the signal of `cv` (issued by `svc_thread`'s `cv_flush` after `G` is released), `note_runnable`. If that set `yield_pending`, it also records `start_by` / `start_epoch` (`:954`).
 4. ExitThread, SVC 0x0A (`:959`) → `thread_exit` (`:353-363`):
    - Records the exit time and does not log (`:354-355`).
-   - Under `G`: `exited` = 1, `hand_wake(t)` (since H5), `wake_sync_waiters(t)`, clear `g_keythr`, `thr_free` if `closed`.
+   - Under `G`: `exited` = 1, `hand_wake(t)` (since H5), `wake_sync_waiters(t)`, clear `g_keythr`, `thr_free` if `closed` and no pause pins it (since H9).
    - After releasing `G`, `cv_flush` issues its waiters' signals (since H3).
    - `pthread_exit`.
-5. CloseHandle on a thread, SVC 0x16 (`:1163-1167`): frees the slot and sets `closed`; `thr_free` if already exited. `thr_free` (`:343-351`) unlinks from `g_all` and removes every `hand[]` and `start_by` pointing at the freed thread; then, since H3, it waits, holding `G`, with `sched_yield` until the thread's `cv_pend` is 0, so no queued signal reaches a destroyed `cv`.
+5. CloseHandle on a thread, SVC 0x16 (`:1163-1167`): frees the slot and sets `closed`; `thr_free` if already exited and not pinned (since H9). Since H9 a third caller is SetThreadActivity, when its pause drops the last pin of a closed, exited thread. `thr_free` (`:343-351`) unlinks from `g_all` and removes every `hand[]` and `start_by` pointing at the freed thread; then, since H3, it waits, holding `G`, with `sched_yield` until the thread's `cv_pend` is 0, so no queued signal reaches a destroyed `cv`.
 6. The main thread: `guest_main` (`dm/host/main.c:22`) calls `svc_thread_main_init` (`dm/host/hle_thread.c:512-533`):
    - Key, QoS map, preempt mode, SIGUSR2 handler, hitch thread (`:513-517`).
    - Priority 44, core 0, mask 1, `started` (`:521`).
@@ -277,7 +277,7 @@ The guest block is one anonymous reservation (`dm/host/hle_svc.c:53`), and `dm_g
 1. SetThreadActivity(pause), SVC 0x32 (`:989-1011`), under `G`:
    1. `pause_req` = 1; `svc_state |= 2`.
    2. If the target is not started, has exited, or is inside an SVC (bit 0), it counts as paused at once.
-   3. Otherwise it loops: `pthread_kill(SIGUSR2)` without `G`, then waits 100 µs on `pcv`. After 1 s it logs a `[RED]` line.
+   3. Otherwise it loops: `pthread_kill(SIGUSR2)` without `G`, then waits 100 µs on `pcv`. After 1 s it logs a `[RED]` line. Since H9 the requester pins the target (`pins`) before the loop and unpins it after; the target is freed only once no pause pins it, so the loop's reads after each release of `G` reach a live object. A target that exits during the loop ends it with success, as on Horizon.
 2. `on_pause_sig` (`:372-393`) stops only a thread that runs module code with no SVC frame:
    - Saves the ucontext into `ctx_*`, with x18 from the K18 slot and sp − 32.
    - Sets `paused`, then waits on `pcv` until resumed.
@@ -316,7 +316,7 @@ These read or write fields that other paths read under `G`. They are stated as c
 | `svc_thread_impl` entry | own `last_svc`, `last_lr`, `nsvc` | `:927` | `hitch_grab` (`:448-449`); `svc_thread_dump` reads them with no lock |
 | `dm_thread_mark_host` | own `host_owned` (write) | `:129`, from `spawn_tramp` (`dm/host/hle_guestthread.c:16`) | `dm_yield_to_core_peers` (`:200`), `note_runnable` (`:239`), `thr_limit_used` (`:609`), `dm_thread_cpu` (`:869`) |
 | `thr_svc_enter` | own `svc_pc`, `svc_x18` (plain); `svc_regs` store and `svc_state` bit 0 set (atomic); `qos_pending` (atomic) | `:397-398` | `ctx_fill` (`:424-425`); SetThreadActivity reads `svc_state` (`:997`) |
-| SetThreadActivity pause loop | target's `pt` (read) after dropping `G`; then `paused`, `exited` after retaking it | `:1001-1002` | `thread_exit` frees the target under `G` when its handle is already closed (`:360`), so in that window these reads can reach a freed `thr_t` |
+| SetThreadActivity pause loop | target's `pt` (read) after dropping `G`; then `paused`, `exited` after retaking it | `:1001-1002` | Since H9 the target is pinned for the whole loop, so `thread_exit` and CloseHandle cannot free it in these windows. `pt` may still name a thread that has just exited; the signal call is then made to a finished pthread, as it already was for an exited thread whose handle stayed open |
 | `thr_yield`, `dm_spin_wait`, `poll_wait_begin`, `poll_wait_end` | own `nyield`, `nbackoff`, `nspin`, `spin_site`, `spin_mod`, `yrun_*`, `srun_*`, `poll_ret` | `:783`, `:803-806`, `:820-824`, `:831` | `dm_yield_top` reads the counters and writes `*_seen` (`:838-847`) |
 | SleepThread | own `nhand` (read) | `:964` | `thr_free` on another thread rewrites `u->nhand` (`:347`) |
 | `yield_for`, `dm_guest_sleep_ns` | own `sleeping` (atomic) | `:763`, `:909` | `thr_runnable` |
@@ -324,7 +324,7 @@ These read or write fields that other paths read under `G`. They are stated as c
 | `svc_thread_dump` | `g_all` and every `thr_t` | `:666-737` | |
 | `cv_flush` | each queued thread's `cv` (signal) and `cv_pend` (atomic decrement, release) | `cv_flush` (since H3) | `thr_free` waits for `cv_pend` 0 (acquire) |
 
-Between releasing `G` and its `cv_flush`, no path takes `G` again (`svc_thread`, `thread_exit`, `dm_guest_clock_advanced`, the `hle_signal_*` functions; H5's `G` sections in `svc_thread` come after its `cv_flush`). `thr_free` spins on `cv_pend` holding `G`, so a `G` section added in such a window would deadlock it.
+Between releasing `G` and its `cv_flush`, no path takes `G` again (`svc_thread`, `thread_exit`, `dm_guest_clock_advanced`, the `hle_signal_*` functions; H5's `G` sections in `svc_thread` come after its `cv_flush`). `thr_free` spins on `cv_pend` holding `G`, so a `G` section added in such a window would deadlock it. SetThreadActivity queues no deferred signal, so the `thr_free` at its last unpin (since H9) waits on no flush of its own, and no flush takes `G`.
 
 `dm_thread_mark_host` runs on the new thread, after StartThread's `note_runnable` (`:952`) has already run with `host_owned` = 0. Until then a lower-priority spawner pinned to the same core can get `yield_pending` and wait for the new thread in `dm_yield_to_core_peers`. The wait ends once `spawn_tramp` has set `host_owned`.
 
