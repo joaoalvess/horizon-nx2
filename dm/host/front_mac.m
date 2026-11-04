@@ -1189,6 +1189,32 @@ static void power_watch(void) {
     LOG("front end: thermal state %d, Low Power Mode %s", dm_thermal_now(), dm_low_power_now() ? "on" : "off");
 }
 
+static void window_act(NSWindow *win, const char *what) {
+    static NSWindow *cover;
+    if (!strcmp(what, "cover") && !cover) {
+        cover = [[NSWindow alloc] initWithContentRect:win.frame styleMask:NSWindowStyleMaskBorderless backing:NSBackingStoreBuffered defer:NO];
+        cover.backgroundColor = NSColor.blackColor; cover.opaque = YES; cover.releasedWhenClosed = NO;
+        [cover orderWindow:NSWindowAbove relativeTo:win.windowNumber];
+    } else if (!strcmp(what, "uncover") && cover) { [cover orderOut:nil]; cover = nil; }
+    else if (!strcmp(what, "hide")) [NSApp hide:nil];
+    else if (!strcmp(what, "unhide")) [NSApp unhide:nil];
+    LOG("front end: DM_WINDOW_SCRIPT %s (window %s, %s)", what, (win.occlusionState & NSWindowOcclusionStateVisible) ? "visible" : "not visible", win.isKeyWindow ? "key" : "not key");
+}
+static void window_script(NSWindow *win) {
+    const char *e = getenv("DM_WINDOW_SCRIPT");
+    if (!e || !*e) return;
+    static const char *const known[] = {"cover", "uncover", "hide", "unhide"};
+    char *buf = strdup(e);
+    for (char *save, *tok = strtok_r(buf, ",", &save); tok; tok = strtok_r(NULL, ",", &save)) {
+        char what[16]; double at; const char *act = NULL;
+        if (sscanf(tok, "%15[a-z]@%lf", what, &at) != 2 || at < 0) die("DM_WINDOW_SCRIPT entry '%s' should be action@seconds", tok);
+        for (size_t i = 0; i < sizeof known / sizeof *known; i++) if (!strcmp(what, known[i])) act = known[i];
+        if (!act) die("DM_WINDOW_SCRIPT unknown action '%s' (cover / uncover / hide / unhide)", what);
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(at * 1e9)), dispatch_get_main_queue(), ^{ window_act(win, act); });
+    }
+    free(buf);
+}
+
 void front_run(void (*guest)(void)) {
     // A game: tell macOS its work is latency-critical, so the system does not trade its frame time for power while the frame rate is capped
     static id activity; activity = [[NSProcessInfo processInfo] beginActivityWithOptions:NSActivityUserInitiated | NSActivityLatencyCritical reason:@"game"];
@@ -1303,6 +1329,7 @@ void front_run(void (*guest)(void)) {
         NSNotificationCenter *wsc = NSWorkspace.sharedWorkspace.notificationCenter;
         [wsc addObserverForName:NSWorkspaceScreensDidSleepNotification object:nil queue:nil usingBlock:^(NSNotification *n) { (void)n; g_screens_awake = 0; LOG("front end: the displays went to sleep"); }];
         [wsc addObserverForName:NSWorkspaceScreensDidWakeNotification object:nil queue:nil usingBlock:^(NSNotification *n) { (void)n; g_screens_awake = 1; LOG("front end: the displays woke"); }];
+        window_script(win);
         // Guest thread: 64 MiB stack (the Switch main thread stack is specified by npdm; the host gives plenty)
         static guest_arg ga; ga.fn = guest;
         pthread_attr_t a; pthread_attr_init(&a); pthread_attr_setstacksize(&a, 64u << 20);
