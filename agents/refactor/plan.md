@@ -186,10 +186,13 @@ Check tiers in M (D10):
 
 Upstream ideas, not ported (D7): each becomes a catalog item only on its merit, measured on the user's games:
 - `85468b6c`: DK's own upscaler (NDSR) drawn by MetalFX, 3.5-5 → about 1 ms a frame on an M1 (GPU time);
-- `84ec307f`: DK's mesh geometry draws gathered into one dispatch, 480 draws 1.50 → 0.67-0.72 ms on an M1;
-- `1110473c`: placement sparse tiles shared by physical memory (Mario Kart World's terrain in a third of the GPU memory, heaps flat at 1 GB on a 16 GB machine);
-- `1440a736`: a finalized program leaves every queue's bindings (a crash in `keys_hash` on another game);
-- `e70fd69d`: the shader builder reads records from their package when needed instead of holding 4.4 GB (Pokopia's parallel builds).
+- `84ec307f`: DK's mesh geometry draws gathered into one dispatch, 480 draws 1.50 → 0.67-0.72 ms on an M1; it needs `53ab7a9d`, without which no DK draw joins a run (upstream map);
+- `1110473c`: placement sparse tiles shared by physical memory (Mario Kart World's terrain in a third of the GPU memory, heaps flat at 1 GB on a 16 GB machine); the fork's own `8fa4f93b` already shares tiles by physical page (MKW about 15,700 tiles, 980 MB, against 61,361 tiles, 3,835 MB, before it). Still missing from upstream's idea: sharing for textures the GPU draws into, and keeping the GPU's content across a remap;
+- `1440a736`: a finalized program leaves every queue's bindings (a crash in `keys_hash` on another game); the fix is missing here (`hle_nvn.c:634`), but no log of the three games shows that crash;
+- `e70fd69d`: the shader builder reads records from their package when needed instead of holding 4.4 GB (Pokopia's parallel builds);
+- `e250bb8b` part (b) overlaps C2, and `04ef91eb`'s prescan overlaps P1 (upstream map's reviewers).
+
+The full map, 155 upstream commits (`6136418b` to `975bb4c1`) with a verdict each, is `agents/upstream/nxnative.md` on branch `upstream-ports` (session `switch-7b`); its re-implementations come one PR per idea into `refactor`, after the frozen windows.
 
 S5 tests, written before its code:
 - queue order;
