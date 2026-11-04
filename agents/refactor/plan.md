@@ -206,10 +206,10 @@ Parallel workstreams (the user, 2026-11-04 16:30), each in `.claude/worktrees/<b
 
 | Branch | Stream | Scope | State |
 |---|---|---|---|
-| `rf-m0-build` | M0 part 5 and D5 | `dm/host/Makefile` one object per file with dependency files under `gen/<id>/obj/`, `DM_HOST_REV` through a generated header; `dm/ios/tools/gen_build.py`, `compile_check.py` adapted; iOS Release `-O2` + ThinLTO; unsigned Release link | started 17:25 |
-| `rf-m0-link` | M0 parts 1-4, 8 and the deterministic count | replayer and tests link module objects; `nvn_mtl_all.inc` and `MTL_MODS`; runtime switches for the tap and inline dispatch; one `mtl_submit`; the files keyed to `nvn_mtl.m`; the dependency check; the count mode and its start baseline; `commands.md` lines (given to the main thread) | started 17:25 |
-| `rf-m0-tools` | M0 parts 6 (less the count) and 7 | the move tool, the move check, the call check; the module map regenerated and its pipeline under `dm/tools` | started 17:25 |
-| `rf-ht-sta` | HT, `SetThreadActivity` | the use after free of the pause loop's `t->pt` read, with its test and `docs/reference` entry | started 17:25 |
+| `rf-m0-build` | M0 part 5 and D5 | `dm/host/Makefile` one object per file with dependency files under `gen/<id>/obj/`, `DM_HOST_REV` through a generated header; `dm/ios/tools/gen_build.py`, `compile_check.py` adapted; iOS Release `-O2` + ThinLTO; unsigned Release link | started 17:20 |
+| `rf-m0-link` | M0 parts 1-4, 8 and the deterministic count | replayer and tests link module objects; `nvn_mtl_all.inc` and `MTL_MODS`; runtime switches for the tap and inline dispatch; one `mtl_submit`; the files keyed to `nvn_mtl.m`; the dependency check; the count mode and its start baseline; `commands.md` lines (given to the main thread) | started 17:20 |
+| `rf-m0-tools` | M0 parts 6 (less the count) and 7 | the move tool, the move check, the call check; the module map regenerated and its pipeline under `dm/tools` | started 17:20 |
+| `rf-ht-sta` | HT, `SetThreadActivity` | the use after free of the pause loop's `t->pt` read, with its test and `docs/reference` entry | started 17:20 |
 
 ## Root causes
 
