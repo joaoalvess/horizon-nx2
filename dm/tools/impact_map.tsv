@@ -9,6 +9,7 @@
 #   (the replay runs on its own threads, the prepare step at the first submission, the chain offline). test_usage.py checks that every glob matches a file of the repository.
 docs/*	-	documentation
 *.md	-	documentation
+apps/*	-	the Mac hub and the Apple TV app (Swift, outside the host and the games)
 dm/tools/tests/*	-	tool tests
 dm/gfx/tests/*	-	graphics tests
 dm/host/tests/*	-	host tests
