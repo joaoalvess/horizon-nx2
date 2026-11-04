@@ -55,3 +55,23 @@ Every replay of these captures passes `--sdk-ounce 1` (they predate R3's header 
 | dk_cliff_f2400 | 67.50 M | 67.74 M | 65.61 M | 65.19 M | -3.3 % | 105.68 / 103.12 M | yes |
 | dk_mine_f2700 | 60.82 M | 61.01 M | 58.77 M | 58.63 M | -3.6 % | 96.46 / 97.14 M | yes |
 | dk_ypunch_f3300 | 26.99 M | 26.99 M | 25.70 M | 25.68 M | -4.8 % | 61.58 / 60.20 M | yes |
+
+### Final (11:21-12:14)
+
+`base-b0d98ee7/nvn_replay_count` against `cand-C6/nvn_replay` (HEAD `a8114711` plus one hunk dropped before the commit that changes when a retain / release pair runs, not how many), same method. The guard stopped the first run for swap growth at `pk_menu` (the user was using the Mac); the rest ran again from `pk_menu`. Noisier than the interim run: DK runs of the same build now differ by up to 26 % (`dk_neon` base 58.9 / 74.3 M) and process instructions rose 20-40 %, which points at the counted `ubc_wait` busy-spin under load (`commands.md`, blind spots). The interim table is the cleaner base-against-HEAD comparison for DK.
+
+| Capture | base 1 | base 2 | HEAD 1 | HEAD 2 | HEAD vs base (median of runs) | process instr. base / HEAD | all replays match |
+|---|---|---|---|---|---|---|---|
+| pk_title_f2000 | 6.31 M | 5.89 M | 6.93 M | 6.51 M | +10.2 % | 6.29 / 6.95 M | yes |
+| pk_tip_f3000 | 7.06 M | 6.24 M | 5.47 M | 6.10 M | -13.1 % | 6.92 / 5.95 M | yes |
+| pk_ditto_f1050 | 1.68 M | 1.47 M | 1.58 M | 1.47 M | -3.1 % | 1.70 / 1.63 M | yes |
+| pk_world_f4200 | 30.02 M | 29.80 M | 27.76 M | 28.54 M | -5.9 % | 35.67 / 35.23 M | yes |
+| pk_walk_f5030 | 30.06 M | 31.67 M | 26.44 M | 27.17 M | -13.2 % | 39.20 / 34.56 M | yes |
+| pk_menu_f5550 | 29.09 M | 30.19 M | 25.56 M | 25.99 M | -13.1 % | 37.16 / 33.57 M | yes |
+| pk_bag_f6250 | 29.42 M | 28.56 M | 26.70 M | 25.01 M | -10.8 % | 35.90 / 33.10 M | yes |
+| dk_save_f600 | 6.20 M | 6.19 M | 5.93 M | 5.93 M | -4.2 % | 10.50 / 10.21 M | yes |
+| dk_isle_f1800 | 40.52 M | 44.88 M | 39.03 M | 42.54 M | -4.5 % | 135.37 / 134.30 M | yes |
+| dk_neon_f2100 | 58.86 M | 74.33 M | 71.47 M | 71.40 M | +7.3 % | 105.34 / 121.50 M | yes |
+| dk_cliff_f2400 | 81.53 M | 71.67 M | 68.44 M | 69.31 M | -10.1 % | 114.72 / 100.98 M | yes |
+| dk_mine_f2700 | 63.89 M | 65.98 M | 69.90 M | 61.19 M | +0.9 % | 128.00 / 133.91 M | yes |
+| dk_ypunch_f3300 | 30.05 M | 30.05 M | 29.24 M | 29.52 M | -2.2 % | 77.84 / 80.00 M | yes |
