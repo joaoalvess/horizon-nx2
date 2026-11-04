@@ -18,7 +18,7 @@ void hle_signal_system_event(void *g) { (void)g; ev_sig = 1; }
 void hle_clear_system_event(void *g) { (void)g; ev_sig = 0; }
 static int checks, fails;
 #define CHECK(c, s) do { checks++; int ok = !!(c); fails += !ok; printf("%s %s\n", ok ? "✓" : "✗", s); } while (0)
-static void reset(void) { g_mqh = g_mqn = 0; g_focus = 1; g_seen = 1; g_applets = 0; g_opmode = 1; g_ntf_opmode = g_ntf_perfmode = 0; g_focus_mode = -1; }
+static void reset(void) { g_mqh = g_mqn = 0; g_focus = 1; g_seen = 1; g_applets = 0; g_streamed = 0; g_opmode = 1; g_ntf_opmode = g_ntf_perfmode = 0; g_focus_mode = -1; }
 static int pop_is(uint32_t want) { uint32_t m = 999; return h_oe_TryPopMsg(&m) && m == want; }
 static int empty(void) { uint32_t m = 999; return !h_oe_TryPopMsg(&m) && m == 999; }
 static int child_kind;
@@ -153,5 +153,16 @@ int main(void) {
     h_oe_SetFocusMode(3); dm_applet_enter("test");
     CHECK(empty() && h_oe_GetFocus() == 2, "focus mode 3: an applet changes the state without a notification");
     dm_applet_leave(); CHECK(empty() && h_oe_GetFocus() == 1, "focus mode 3: back to 1 without a notification");
+    reset();
+    dm_focus_stream(1); CHECK(empty() && h_oe_GetFocus() == 1, "a stream client attaches while the window is in focus: no change");
+    dm_focus_set(2); CHECK(empty() && h_oe_GetFocus() == 1, "while a stream client is attached the window losing focus does not reach the game");
+    dm_focus_set(3); CHECK(empty() && h_oe_GetFocus() == 1, "while a stream client is attached the window going to the background does not reach the game");
+    dm_applet_enter("test"); CHECK(pop_is(15) && empty() && h_oe_GetFocus() == 2, "an applet still takes the game's focus while streaming: 15, state 2");
+    dm_applet_leave(); CHECK(pop_is(15) && empty() && h_oe_GetFocus() == 1, "the applet closes while streaming: 15, state 1");
+    dm_focus_stream(1); CHECK(empty() && h_oe_GetFocus() == 1, "a second attach changes nothing");
+    dm_focus_stream(0); CHECK(pop_is(15) && empty() && h_oe_GetFocus() == 3, "the client detaches: the window's state applies, 15, state 3");
+    dm_focus_stream(1); CHECK(pop_is(15) && empty() && h_oe_GetFocus() == 1, "a client attaches while the window is in the background: 15, state 1");
+    dm_focus_stream(0); dm_focus_set(1); CHECK(pop_is(15) && empty() && h_oe_GetFocus() == 1, "detach, then the window comes back into focus: 15, state 1");
+    dm_focus_stream(1); dm_focus_set(2); dm_focus_set(1); dm_focus_stream(0); CHECK(empty() && h_oe_GetFocus() == 1, "the window leaves and regains focus while streaming: nothing reaches the game");
     printf("== oe %d checks, %d failed ==\n", checks, fails); return fails != 0;
 }

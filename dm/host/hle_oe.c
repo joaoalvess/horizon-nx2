@@ -68,27 +68,31 @@ static int focus_notifies(void) { int m = atomic_load(&g_focus_mode); return m !
 // has closed. The host's stand-ins answer on the caller's thread, so the game sees that pair around the call. Mario Kart 8 Deluxe applies the controller applet's answer only
 // after the InFocus notification (its notification thread main+0x8ea560 sets the flag main+0x87b5d0 takes each frame); with none its 2P character select never took input
 // (GitHub issue #550). The game sees the front end's state, or 2 while an applet is open over an application in focus; a change of what it sees is one notification 15
-static int g_applets; static _Atomic int g_seen = 1; static pthread_mutex_t g_seen_lock = PTHREAD_MUTEX_INITIALIZER;
-static void focus_sync(int applets) {   // applets: +1 an applet opens, -1 one closes, 0 the front end's state changed
+static int g_applets, g_streamed; static _Atomic int g_seen = 1; static pthread_mutex_t g_seen_lock = PTHREAD_MUTEX_INITIALIZER;
+static void focus_sync(int applets, int streamed) {   // applets: +1 an applet opens, -1 one closes, 0 the front end's state changed
     pthread_mutex_lock(&g_seen_lock);
     g_applets += applets;
     if (g_applets < 0) die("dm_applet_leave without dm_applet_enter");
-    int w = atomic_load(&g_focus), s = w == 1 && g_applets ? 2 : w, changed = atomic_exchange(&g_seen, s) != s;
+    if (streamed >= 0) g_streamed = streamed;
+    int window = atomic_load(&g_focus), w = g_streamed ? 1 : window, s = w == 1 && g_applets ? 2 : w, changed = atomic_exchange(&g_seen, s) != s;
+    int held = g_streamed && !applets && streamed < 0;
     pthread_mutex_unlock(&g_seen_lock);
+    if (held) LOG("oe focus: the window's state %d waits while a stream client is attached", window);
     if (!changed) return;   // pushed outside the lock: 15 only says "query the state again", so pushes from two threads need no order
-    LOG("oe focus state → %d%s", s, applets > 0 ? " (library applet open)" : applets < 0 ? " (library applet closed)" : "");
+    LOG("oe focus state → %d%s", s, applets > 0 ? " (library applet open)" : applets < 0 ? " (library applet closed)" : streamed == 1 ? " (a stream client attached)" : streamed == 0 ? " (the stream client detached)" : "");
     if (focus_notifies()) mq_push(MSG_FOCUS);
 }
-void dm_applet_enter(const char *name) { LOG("oe library applet: %s", name); focus_sync(1); }
-void dm_applet_leave(void) { focus_sync(-1); }
+void dm_applet_enter(const char *name) { LOG("oe library applet: %s", name); focus_sync(1, -1); }
+void dm_applet_leave(void) { focus_sync(-1, -1); }
 int dm_focus_now(void) { return atomic_load(&g_focus); }   // the front end's state, not an applet's: the display link follows the window
 uint64_t dm_focus_in_since(void) { return atomic_load(&g_focus_in_ns); }   // graphics layer display link watchdog: stalls are only computed while active, counted from activation (nvn_mtl.m mtl_present_wait)
 void dm_focus_set(int st) {
     if (st < 1 || st > 3) die("dm_focus_set: invalid state %d", st);
     if (st == 1) atomic_store(&g_focus_in_ns, now_ns());
     if (atomic_exchange(&g_focus, st) == st) return;
-    focus_sync(0);
+    focus_sync(0, -1);
 }
+void dm_focus_stream(int attached) { focus_sync(0, attached != 0); }
 static int opmode(void) { return dm_opmode(); }
 
 // Screenshot / video recording switches: the host has no system screenshot service, no-op
