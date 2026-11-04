@@ -164,5 +164,10 @@ int main(void) {
     dm_focus_stream(1); CHECK(pop_is(15) && empty() && h_oe_GetFocus() == 1, "a client attaches while the window is in the background: 15, state 1");
     dm_focus_stream(0); dm_focus_set(1); CHECK(pop_is(15) && empty() && h_oe_GetFocus() == 1, "detach, then the window comes back into focus: 15, state 1");
     dm_focus_stream(1); dm_focus_set(2); dm_focus_set(1); dm_focus_stream(0); CHECK(empty() && h_oe_GetFocus() == 1, "the window leaves and regains focus while streaming: nothing reaches the game");
+    dm_focus_stream(1); dm_focus_stream(2); CHECK(pop_is(15) && empty() && h_oe_GetFocus() == 3, "the stream client pauses the game: 15, state 3, as HOME on the Switch");
+    dm_focus_set(2); dm_focus_set(1); CHECK(empty() && h_oe_GetFocus() == 3, "the window's focus changes wait while the stream client has the game paused");
+    dm_applet_enter("test"); CHECK(empty() && h_oe_GetFocus() == 3, "an applet opened while paused leaves the state at 3");
+    dm_applet_leave(); dm_focus_stream(1); CHECK(pop_is(15) && empty() && h_oe_GetFocus() == 1, "a client attaches to the paused game: 15, state 1");
+    dm_focus_stream(2); dm_focus_set(2); dm_focus_stream(0); CHECK(pop_is(15) && empty() && h_oe_GetFocus() == 2, "a detach without pause after a pause: one 15, the window's state 2");
     printf("== oe %d checks, %d failed ==\n", checks, fails); return fails != 0;
 }

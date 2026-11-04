@@ -74,12 +74,12 @@ static void focus_sync(int applets, int streamed) {   // applets: +1 an applet o
     g_applets += applets;
     if (g_applets < 0) die("dm_applet_leave without dm_applet_enter");
     if (streamed >= 0) g_streamed = streamed;
-    int window = atomic_load(&g_focus), w = g_streamed ? 1 : window, s = w == 1 && g_applets ? 2 : w, changed = atomic_exchange(&g_seen, s) != s;
+    int window = atomic_load(&g_focus), w = g_streamed == 2 ? 3 : g_streamed ? 1 : window, s = w == 1 && g_applets ? 2 : w, changed = atomic_exchange(&g_seen, s) != s;
     int held = g_streamed && !applets && streamed < 0;
     pthread_mutex_unlock(&g_seen_lock);
-    if (held) LOG("oe focus: the window's state %d waits while a stream client is attached", window);
+    if (held) LOG("oe focus: the window's state %d waits while %s", window, g_streamed == 2 ? "the stream client has the game paused" : "a stream client is attached");
     if (!changed) return;   // pushed outside the lock: 15 only says "query the state again", so pushes from two threads need no order
-    LOG("oe focus state → %d%s", s, applets > 0 ? " (library applet open)" : applets < 0 ? " (library applet closed)" : streamed == 1 ? " (a stream client attached)" : streamed == 0 ? " (the stream client detached)" : "");
+    LOG("oe focus state → %d%s", s, applets > 0 ? " (library applet open)" : applets < 0 ? " (library applet closed)" : streamed == 1 ? " (a stream client attached)" : streamed == 2 ? " (the stream client paused the game)" : streamed == 0 ? " (the stream client detached)" : "");
     if (focus_notifies()) mq_push(MSG_FOCUS);
 }
 void dm_applet_enter(const char *name) { LOG("oe library applet: %s", name); focus_sync(1, -1); }
@@ -92,7 +92,7 @@ void dm_focus_set(int st) {
     if (atomic_exchange(&g_focus, st) == st) return;
     focus_sync(0, -1);
 }
-void dm_focus_stream(int attached) { focus_sync(0, attached != 0); }
+void dm_focus_stream(int state) { focus_sync(0, state < 0 ? 0 : state > 2 ? 2 : state); }
 static int opmode(void) { return dm_opmode(); }
 
 // Screenshot / video recording switches: the host has no system screenshot service, no-op
@@ -183,11 +183,15 @@ HLE_FORCE("_ZN2nn2oe27SetPerformanceConfigurationENS0_15PerformanceModeEi", "set
 // Scripted state changes (verify lifecycle / overheat downgrade without a window): DM_OE_SCRIPT="focus=3@10,focus=1@20,opmode=0@30" (second N); bg=1 / bg=0 run the whole background round trip (see script_bg)
 // Time counts from the game's first notification fetch. Coexists with front end calls.
 #include <unistd.h>
+void dm_app_suspend(int on) {
+    if (on) { dm_audio_suspend(1); guest_clock_freeze_for(1, 1); dm_gfx_suspend(1); }
+    else { dm_gfx_suspend(0); guest_clock_freeze_for(1, 0); dm_audio_suspend(0); }
+}
 // bg=1 / bg=0: the whole "to background / back to foreground" sequence, in the same order as the scene lifecycle in front_ios.m (resign active -> enter background; enter foreground -> become active), minus the audio session reset iOS does on returning.
 // Used to reproduce "after going to the background and back" problems on the Mac (audio take-over and resume, guest clock freeze, graphics suspend); to imitate the process being suspended as well, send dmhost SIGSTOP / SIGCONT between the two items
 static void script_bg(int on) {
-    if (on) { dm_focus_set(2); dm_focus_set(3); dm_audio_suspend(1); guest_clock_freeze_for(1, 1); dm_gfx_suspend(1); }
-    else { dm_gfx_suspend(0); guest_clock_freeze_for(1, 0); dm_audio_suspend(0); dm_focus_set(2); dm_focus_set(1); }
+    if (on) { dm_focus_set(2); dm_focus_set(3); dm_app_suspend(1); }
+    else { dm_app_suspend(0); dm_focus_set(2); dm_focus_set(1); }
 }
 static void *oe_script(void *arg) {
     char *buf = arg; uint64_t t0 = now_ns();
