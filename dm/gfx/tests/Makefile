@@ -35,13 +35,15 @@ NOT_RUN = t_host_stubs t_present_rescue_focus t_atomic_return t_geometry_primiti
 RUN_TESTS = $(filter-out $(NOT_RUN),$(basename $(sort $(wildcard t_*.c t_*.m))))
 check_t_%: t_%
 	$(RUN_ENV) ./$<
-.PHONY: run check_test_dmsh_pull check_test_tbdr_budget
+.PHONY: run check_test_dmsh_pull check_test_tbdr_budget check_test_rec_layout
 run: $(RUN_TESTS)
-	@$(MAKE) --no-print-directory -j1 $(addprefix check_,$(RUN_TESTS)) check_test_dmsh_pull check_test_tbdr_budget
+	@$(MAKE) --no-print-directory -j1 $(addprefix check_,$(RUN_TESTS)) check_test_dmsh_pull check_test_tbdr_budget check_test_rec_layout
 check_test_dmsh_pull:
 	python3 test_dmsh_pull.py
 check_test_tbdr_budget:
 	DM_GAME=$(GAME) python3 test_tbdr_budget.py
+check_test_rec_layout:
+	python3 test_rec_layout.py
 t_transform_feedback: t_transform_feedback.m $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_transform_feedback.m $(MTL_T_SRC) $(FW)
 .PHONY: check_t_transform_feedback
@@ -131,7 +133,7 @@ t_cpu_tex: t_cpu_tex.m $(MTL_T_DEP)
 check_t_cpu_tex: t_cpu_tex
 	MTL_DEBUG_LAYER=1 ./t_cpu_tex --metal
 # DM_NVN_CAPTURE: the replayer (a tool, not a test: it needs a capture, docs/agents/05-debugging.md) and the CPU-only test of the capture format and record relocation
-nvn_replay: nvn_replay.m sdk_ounce.c $(MTL_T_DEP)
+nvn_replay: nvn_replay.m nvn_rec_digest.inc sdk_ounce.c $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ nvn_replay.m sdk_ounce.c $(filter-out ../nvn/hle_nvn.c,$(MTL_T_SRC)) $(FW)
 t_capture: t_capture.c ../nvn/nvn_capture.c ../nvn/nvn_capture.h ../nvn/nvn_obj.h
 	clang $(CFLAGS) -o $@ t_capture.c ../nvn/nvn_capture.c
@@ -143,7 +145,10 @@ t_capture_live: t_capture_live.m sdk_ounce.c $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_capture_live.m sdk_ounce.c $(filter-out ../nvn/hle_nvn.c,$(MTL_T_SRC)) $(FW)
 .PHONY: check_t_capture_live
 check_t_capture_live: t_capture_live nvn_replay
-	@d=$$(mktemp -d); ./t_capture_live $$d/live.nvncap && ./nvn_replay $$d/live.nvncap --repeat 2 && ./t_capture_live $$d/live2.nvncap 1 && ./nvn_replay $$d/live2.nvncap --repeat 2; rc=$$?; rm -rf $$d; exit $$rc
+	@d=$$(mktemp -d); ./t_capture_live $$d/live.nvncap && ./nvn_replay $$d/live.nvncap --repeat 2 && ./nvn_replay $$d/live.nvncap --repeat 2 --digest && ./t_capture_live $$d/live2.nvncap 1 && ./nvn_replay $$d/live2.nvncap --repeat 2; rc=$$?; rm -rf $$d; exit $$rc
+t_rec_digest: t_rec_digest.m nvn_rec_digest.inc $(MTL_T_DEP)
+	clang $(CFLAGS) -fobjc-arc -o $@ t_rec_digest.m $(MTL_T_SRC) $(FW)
+check_t_rec_digest: RUN_ENV = MTL_DEBUG_LAYER=1
 t_cube_placeholder: t_cube_placeholder.m $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_cube_placeholder.m $(MTL_T_SRC) $(FW)
 .PHONY: check_t_cube_placeholder

@@ -2,7 +2,7 @@
 // the one the live run took. Built like the gfx tests, which include nvn_mtl.m (and hle_nvn.c) in one translation unit: the replayer reaches the replay layer's own tables
 // and the host's pool / program / descriptor-pool side tables without any entry point added to them for it.
 //   make -C dm/gfx/tests GAME=<id> nvn_replay
-//   ./nvn_replay <capture> [--repeat n] [--max-pixels n] [--warm n] [--png path] [--texdump dir] [--sdk-ounce 0|1] [--writes] [--made]
+//   ./nvn_replay <capture> [--repeat n] [--max-pixels n] [--warm n] [--png path] [--texdump dir] [--sdk-ounce 0|1] [--writes] [--made] [--digest] [--digest-expect hex] [--digest-dump]
 // --repeat n: n replays, each in a fresh process; --warm n: n replays in one process, each after the one before (the replay layer keeps its state; see docs/development.md)
 // --max-pixels n: a replay whose frame differs from the live one in at most n pixels still counts as a match (the replay noise of the game's frame; default 0, bit for bit)
 // Exit status: 0 the replayed frame equals the live one (within --max-pixels), 1 it differs, 2 the capture cannot be replayed by this build (another game, record layout or shader
@@ -11,12 +11,30 @@
 #include <spawn.h>
 #include <sys/wait.h>
 #include <libproc.h>
+#define NVN_REC_TAP 1
+static int g_rdg_sync;
+static void rdg_dispatch_async(dispatch_queue_t q, dispatch_block_t b) { if (g_rdg_sync) b(); else dispatch_async(q, b); }
+#define dispatch_async(q, ...) rdg_dispatch_async(q, __VA_ARGS__)
 #define nvn_game_fps nvn_game_fps_mtl_default
 #include "../nvn/nvn_mtl.m"
 #undef nvn_game_fps
 #define g_ft g_ft_hle
 #include "../nvn/hle_nvn.c"
 #undef g_ft
+#undef dispatch_async
+#include "nvn_rec_digest.inc"
+static char g_rdg_state[1100];
+static void rdg_state_drop(void) { if (*g_rdg_state) [NSFileManager.defaultManager removeItemAtPath:@(g_rdg_state) error:nil]; }
+static const char *rdg_state_take(const char *cap) {
+    NSFileManager *fm = NSFileManager.defaultManager; NSString *user = pso_user_path(); const char *e = getenv("DM_PSO_ARCHIVE");
+    NSString *arch = e && !strcmp(e, "off") ? nil : e && *e ? @(e) : user ? [user.stringByDeletingLastPathComponent stringByAppendingPathComponent:@"pso_archive"] : nil;
+    snprintf(g_rdg_state, sizeof g_rdg_state, "%s.digest.XXXXXX", cap); if (!mkdtemp(g_rdg_state)) { *g_rdg_state = 0; return NULL; } atexit(rdg_state_drop);
+    NSString *dir = @(g_rdg_state), *u2 = [dir stringByAppendingPathComponent:@"pso_user.tsv"], *a2 = [dir stringByAppendingPathComponent:@"pso_archive"]; NSError *err = nil;
+    if (user && [fm fileExistsAtPath:user] && ![fm copyItemAtPath:user toPath:u2 error:&err]) return NULL;
+    if (arch && [fm fileExistsAtPath:arch] && ![fm copyItemAtPath:arch toPath:a2 error:&err]) return NULL;
+    setenv("DM_PSO_USER", u2.fileSystemRepresentation, 1); if (arch) setenv("DM_PSO_ARCHIVE", a2.fileSystemRepresentation, 1); setenv("DM_PSO_PREBUILD", "0", 1);
+    return g_rdg_state;
+}
 uint64_t g_t0_ns;
 void *front_metal_layer(void) { return NULL; }
 module_t *module_of(const void *p) { (void)p; return NULL; }
@@ -188,6 +206,7 @@ static void check_programs(const char *cap_chain) {   // every program resolves 
 
 int main(int argc, char **argv) { @autoreleasepool {
     const char *path = NULL, *png = NULL, *tdir = NULL, *maxpx_arg = "0", *ounce_arg = NULL; int repeat = 1, warm = 1, index = 1;
+    int opt_digest = 0, opt_digest_dump = 0; const char *digest_expect = NULL, *digest_file = NULL;
     setvbuf(stdout, NULL, _IOLBF, 0); crash_install();   // pool pages the replay writes may be write-protected by the dirty tracker, as in the host
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--repeat") && i + 1 < argc) repeat = MAX(1, atoi(argv[++i]));
@@ -199,19 +218,27 @@ int main(int argc, char **argv) { @autoreleasepool {
         else if (!strcmp(argv[i], "--sdk-ounce") && i + 1 < argc) ounce_arg = argv[++i];
         else if (!strcmp(argv[i], "--writes")) opt_writes = 1;
         else if (!strcmp(argv[i], "--made")) opt_made = 1;
+        else if (!strcmp(argv[i], "--digest")) opt_digest = 1;
+        else if (!strcmp(argv[i], "--digest-dump")) opt_digest = opt_digest_dump = 1;
+        else if (!strcmp(argv[i], "--digest-expect") && i + 1 < argc) { opt_digest = 1; digest_expect = argv[++i]; }
+        else if (!strcmp(argv[i], "--digest-file") && i + 1 < argc) { opt_digest = 1; digest_file = argv[++i]; }
         else if (argv[i][0] != '-' && !path) path = argv[i];
-        else { fprintf(stderr, "usage: %s <capture> [--repeat n] [--max-pixels n] [--warm n] [--png path] [--texdump dir] [--sdk-ounce 0|1] [--writes] [--made]\n", argv[0]); return 2; }
+        else { fprintf(stderr, "usage: %s <capture> [--repeat n] [--max-pixels n] [--warm n] [--png path] [--texdump dir] [--sdk-ounce 0|1] [--writes] [--made] [--digest] [--digest-expect hex] [--digest-dump]\n", argv[0]); return 2; }
     }
-    if (!path) { fprintf(stderr, "usage: %s <capture> [--repeat n] [--max-pixels n] [--warm n] [--png path] [--texdump dir] [--sdk-ounce 0|1] [--writes] [--made]\n", argv[0]); return 2; }
+    if (!path) { fprintf(stderr, "usage: %s <capture> [--repeat n] [--max-pixels n] [--warm n] [--png path] [--texdump dir] [--sdk-ounce 0|1] [--writes] [--made] [--digest] [--digest-expect hex] [--digest-dump]\n", argv[0]); return 2; }
     uint64_t maxpx = strtoull(maxpx_arg, NULL, 10);
     if (repeat > 1) {   // each replay in a fresh process: a replay in the same process starts from the replay layer's state the one before left (--warm), which changes the frame
-        int ok = 0, worst = 0;
+        int ok = 0, worst = 0; char dfile[1100] = "";
+        if (opt_digest) { const char *td = getenv("TMPDIR"); snprintf(dfile, sizeof dfile, "%s/nvn_replay_digest.XXXXXX", td && *td ? td : "/tmp"); int fd = mkstemp(dfile); if (fd < 0) RFAIL("cannot make %s", dfile); close(fd); }
         for (int k = 1; k <= repeat; k++) {
-            char idx[16]; snprintf(idx, sizeof idx, "%d", k); const char *args[16]; int na = 0;
+            char idx[16]; snprintf(idx, sizeof idx, "%d", k); const char *args[24]; int na = 0;
             args[na++] = argv[0]; args[na++] = path; args[na++] = "--index"; args[na++] = idx; args[na++] = "--max-pixels"; args[na++] = maxpx_arg;
             if (png) { args[na++] = "--png"; args[na++] = png; }
             if (tdir) { args[na++] = "--texdump"; args[na++] = tdir; }
             if (ounce_arg) { args[na++] = "--sdk-ounce"; args[na++] = ounce_arg; }
+            if (opt_digest) { args[na++] = "--digest-file"; args[na++] = dfile; }
+            if (digest_expect) { args[na++] = "--digest-expect"; args[na++] = digest_expect; }
+            if (opt_digest_dump) args[na++] = "--digest-dump";
             args[na] = NULL;
             pid_t pid; extern char **environ; int st = 0; char self[1024]; uint32_t sn = sizeof self;   // this executable by its path (argv[0] may have come from PATH)
             if (_NSGetExecutablePath(self, &sn)) strlcpy(self, argv[0], sizeof self);
@@ -219,6 +246,14 @@ int main(int argc, char **argv) { @autoreleasepool {
             int rc = WIFEXITED(st) ? WEXITSTATUS(st) : 2; ok += rc == 0; worst = MAX(worst, rc);
         }
         printf("%d of %d fresh replays match the live frame%s\n", ok, repeat, maxpx ? [NSString stringWithFormat:@" (within %llu pixels)", (unsigned long long)maxpx].UTF8String : "");
+        if (opt_digest) {
+            char seen[64][72]; int cnt[64], nd = 0, got = 0; char line[128]; FILE *f = fopen(dfile, "r");
+            while (f && fgets(line, sizeof line, f)) { line[strcspn(line, "\n")] = 0; got++; int j = 0; while (j < nd && strcmp(seen[j], line)) j++;
+                if (j == nd && nd < 64) { strlcpy(seen[nd], line, sizeof seen[nd]); cnt[nd++] = 0; } if (j < nd) cnt[j]++; }
+            if (f) fclose(f); unlink(dfile);
+            if (nd == 1 && got == repeat) printf("command digest: %d of %d fresh replays give %s\n", got, repeat, seen[0]);
+            else { printf("[RED] command digest: %d distinct digests in %d of %d fresh replays:", nd, got, repeat); for (int j = 0; j < nd; j++) printf(" %s x%d", seen[j], cnt[j]); printf("\n"); worst = MAX(worst, 1); }
+        }
         return worst;
     }
     uint64_t tl0 = now_ns();
@@ -253,6 +288,11 @@ int main(int argc, char **argv) { @autoreleasepool {
     g_sdk_ounce = ounce; nvn_gob_switch2 = gob;
     printf("capture %s: %s frame %s, build %s, host %s, chain %s (this build: chain %s)\n", path, title, frame, build, commit, chain, DMSH_CHAIN);
     apply_env(head, hn);
+    if (opt_digest) {
+        const char *st = rdg_state_take(path); if (!st) RFAIL("command digest: cannot copy the live run's pipeline user list and archive beside the capture");
+        g_rec = g_rdg_sync = 1;
+        printf("command digest: the replay's Metal calls go through the encode thread's recorder, which digests them; the replay layer's background dispatches run when they are made, on a copy of the live run's pipeline user list and archive (%s), with the prebuild off\n", st);
+    }
     mtl_init();
     if (head_get(stat, sn, "tex_pool_n", v, sizeof v)) mtl_set_tex_pool_n(atoi(v));
     if (head_get(stat, sn, "origin_ll", v, sizeof v)) mtl_set_origin_lower_left(atoi(v));
@@ -322,12 +362,13 @@ int main(int argc, char **argv) { @autoreleasepool {
     }
     const uint8_t *lpix = NULL; uint64_t lpixn = 0;   // the live frame's pixels (captures made before LPIX have only its digest)
     for (size_t i = 0; i < rp_nch; i++) if (rp_ch[i].c.tag == CAP_LPIX) { lpix = rp_ch[i].d; lpixn = rp_ch[i].c.raw; }
-    char live[65]; cap_hex(pres->sha256, live); int same_all = 1, ok_all = 1; uint64_t worst_px = 0;
+    char live[65]; cap_hex(pres->sha256, live); int same_all = 1, ok_all = 1, digest_ok = 1; uint64_t worst_px = 0;
     for (int rep = 0; rep < warm; rep++) {
         uint64_t exec_ns = 0, setup_ns = 0, pass0 = 0, draw0 = 0, frame_no = rep == 0 && mtl_frame ? mtl_frame : 1000000 + (uint64_t)rep;   // the first replay takes the live frame number (frame-keyed diagnostics)
         uint64_t exec_in = 0, proc_in = 0;
         if (tdir) { char tp[1200]; snprintf(tp, sizeof tp, "%s/r%d_%%d.png", tdir, index + rep); dm_gfx_texdump_next(tp); g_td_frame = (long)frame_no; }
         if (rep) for (uint32_t r = 0; r < rp_nrg; r++) if (rp_rg[r].mem) memcpy(rp_rg[r].mem, rp_rg[r].orig, (size_t)rp_rg[r].size);   // back to the state at the first submit
+        if (opt_digest) { char dp[1100]; snprintf(dp, sizeof dp, "%s.replay%d.calls.txt", path, index + rep); rdg_reset(opt_digest_dump ? dp : NULL); }
         for (uint32_t s = 1; s <= nsub; s++) {
             uint64_t t0 = now_ns();
             for (size_t i = 0; i < rp_nch; i++) {   // what changed before this submit, in the order it was captured
@@ -363,6 +404,7 @@ int main(int argc, char **argv) { @autoreleasepool {
             mtl_finish();   // the capture read the next submit's inputs after the GPU finished this one: so does the replay
             free(hs); for (uint32_t i = 0; i < rp_nseg; i++) free(rp_seg[i]);
         }
+        uint8_t cmd[CC_SHA256_DIGEST_LENGTH]; char cmdx[65] = ""; if (opt_digest) { rdg_final(cmd); cap_hex(cmd, cmdx); }
         tex_t pt = {0}; uint64_t pv = pres->tex; if (!dec_obj(NULL, CAP_K_TEX, &pv, NULL, 0)) RFAIL("the presented texture is not in the capture"); pt = *(const tex_t *)(uintptr_t)pv;
         uint8_t md[32]; uint64_t bytes; uint32_t w, h, pf; char out[65], pngp[1100]; cap_buf mine = {0};
         snprintf(pngp, sizeof pngp, "%s", png ? png : ""); if (!png) snprintf(pngp, sizeof pngp, "%s.replay%d.png", path, index + rep);   // one image per replay: replays of one build can be compared too
@@ -412,9 +454,15 @@ int main(int argc, char **argv) { @autoreleasepool {
         if (have_px) printf("replay %d: %llu pixels differ from the live frame (largest byte difference %u, x %u-%u y %u-%u)\n", index + rep, (unsigned long long)npx, big, x0, x1, y0, y1);
         printf("replay %d: digest %s %s live %s (%ux%u format %u); submit CPU %.2f ms (+ %.2f ms applying the captured state), submit instructions %llu, process instructions %llu, GPU %.2f ms; %llu passes, %llu draws, %llu segments\n", index + rep, out, same ? "==" : "!=", live, w, h, pf, exec_ns / 1e6, setup_ns / 1e6, (unsigned long long)exec_in, (unsigned long long)proc_in, gpu,
                (unsigned long long)(pass1 - pass0), (unsigned long long)(draw1 - draw0), (unsigned long long)g_seg + 1);
+        if (opt_digest) {
+            printf("replay %d: command digest %s: %llu calls, %llu objects, %llu GPU addresses (%llu in no resident buffer), %llu texture or sampler IDs not named\n", index + rep, cmdx,
+                   (unsigned long long)g_rdg_calls, (unsigned long long)g_rdg_nobj, (unsigned long long)g_rdg_addrs, (unsigned long long)g_rdg_unres, (unsigned long long)g_rdg_rids);
+            if (digest_expect && strcmp(digest_expect, cmdx)) { printf("[RED] replay %d: command digest %s, expected %s\n", index + rep, cmdx, digest_expect); digest_ok = 0; }
+            if (digest_file) { FILE *f = fopen(digest_file, "a"); if (!f) RFAIL("cannot write %s", digest_file); fprintf(f, "%s\n", cmdx); fclose(f); }
+        }
     }
     if (same_all) printf("MATCH: the replayed frame equals the live frame\n");
     else if (ok_all) printf("MATCH within --max-pixels %llu: the replayed frame differs from the live frame in at most %llu pixels\n", (unsigned long long)maxpx, (unsigned long long)worst_px);
     else printf("[RED] MISMATCH: the replayed frame differs from the live frame%s\n", lpix ? "" : " (a capture without the live pixels: compared by digest only)");
-    return ok_all ? 0 : 1;
+    return ok_all && digest_ok ? 0 : 1;
 } }
