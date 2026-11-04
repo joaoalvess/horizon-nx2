@@ -30,7 +30,7 @@ body:
   - type: input
     id: commit
     attributes:
-      label: nxnative commit
+      label: Commit
       description: "`git rev-parse --short HEAD` in the checkout you built from (or the date you downloaded it)."
       placeholder: 4639c511
     validations:

@@ -1,6 +1,6 @@
 # horizon-nx2
 
-Mario Kart World, Donkey Kong Bananza and Pokémon Pokopia running natively on Apple silicon. A personal fork of [nxnative](https://github.com/seedds/nxnative), tuned for the Switch 2 games I play on a fanless MacBook Air M4.
+Mario Kart World, Donkey Kong Bananza and Pokémon Pokopia running natively on Apple silicon, tuned for the Switch 2 games I play on a fanless MacBook Air M4. It started as a fork of [nxnative](https://github.com/seedds/nxnative) and is developed independently since November 2026.
 
 <table>
 <tr>
@@ -68,7 +68,7 @@ python3 scripts/build_ipa_from_nsp.py ~/Games/DonkeyKongBananza --platform mac-a
 
 You get a Mac app of the game in its folder, with no icon because a dump holds none. The first build translates the game's shaders and can take hours: about 75 minutes for Donkey Kong Bananza's full set, while Pokopia's full set of 131,426 is estimated at 11 hours. Later builds reuse them. Controls and settings: [Playing on the Mac](docs/playing.md#on-the-mac). Every option of the script: [The packing script in detail](docs/development.md#the-packing-script-in-detail).
 
-Leaving out `--platform mac-app` packs an IPA for iPhone and iPad, but none of these three games has been tested there. Switch 1 games packed from NSPs follow [nxnative's instructions](https://github.com/seedds/nxnative#how-to-play).
+Leaving out `--platform mac-app` packs an IPA for iPhone and iPad, but none of these three games has been tested there. A Switch 1 game is packed from a folder of its NSPs (the game, its update and DLC) with your `prod.keys`: `python3 scripts/build_ipa_from_nsp.py ~/Games/<game> -k ~/keys/prod.keys`.
 
 ## Streaming to the Apple TV
 
@@ -85,15 +85,15 @@ In progress. Three pieces of this repository put a game on the TV:
 
 The encoder and the socket are measured on all three games. The controls, the pause, the pacing without the display, and the hub and TV over the home network are in the code and wait for their test round. [`dm/tools/stream_probe`](dm/tools/stream_probe) stands in for the hub in tests, `horizon-fakestream` for dmhost and `horizon-receiver` for the TV. The protocols, the measurements and the stages are in [STREAMING.md](STREAMING.md) and [apps/README.md](apps/README.md).
 
-## Relationship to nxnative
+## Origins
 
-[nxnative](https://github.com/seedds/nxnative) runs more than a hundred Switch games on iPhone, iPad and Mac ([below](#games-nxnative-plays)). This fork narrows the target to the games above on a 16 GB MacBook Air with no fan, where heat, power and memory decide what plays, and adds what that needs: performance and memory work in the NVN-on-Metal layer and the host, and the streaming source with its Mac hub and Apple TV app. Upstream is merged by hand: only the changes that reach these games (the host, the graphics layers, the shader chain and the SDK services they call) are cherry-picked, and each game is booted again before they land.
+The project began as a fork of [nxnative](https://github.com/seedds/nxnative), which runs more than a hundred Switch games on iPhone, iPad and Mac. It narrowed the target to the games above on a 16 GB MacBook Air with no fan, where heat, power and memory decide what plays, and added what that needs: performance and memory work in the NVN-on-Metal layer and the host, and the streaming source with its Mac hub and Apple TV app. Since November 2026 it is developed independently: the graphics layer and the host are being restructured, and changes made upstream are no longer merged. An idea from upstream is ported only when it is measured to help these games.
 
 ## Acknowledgements
 
 This project is built on other people's work ([licenses](dm/third_party/README.md)):
 
-- **[nxnative](https://github.com/seedds/nxnative)** (MIT), by seedds: the project this fork is built on and follows.
+- **[nxnative](https://github.com/seedds/nxnative)** (MIT), by seedds: the project this one started from, as a fork, until November 2026.
 - **[d2r-mobile](https://github.com/jhaizhou-ops/d2r-mobile)** (MIT) developed this native-execution approach, for Diablo II: Resurrected. nxnative started as a copy of its generic parts: the NSO rewriter, the host that stands in for Horizon, the NVN-on-Metal layer and the iOS app shell. Fixes go both ways.
 - **Ryujinx** (MIT): its shader translator (`Ryujinx.Graphics.Shader`, `Ryujinx.Common` and `Spv.Generator` 1.3.2, in `dm/third_party/ryujinx` with a few fixes listed in [its README](dm/third_party/ryujinx/README.md)) turns the games' shaders into SPIR-V. Its emulation of the kernel and system services is also a reference when the host's behaviour is in doubt.
 - **[Atmosphère](https://github.com/Atmosphere-NX/Atmosphere)**: its kernel, mesosphère, is the reference for Horizon's synchronization semantics (address arbiter, condition variables).
@@ -102,9 +102,9 @@ This project is built on other people's work ([licenses](dm/third_party/README.m
 - **[glslang](https://github.com/KhronosGroup/glslang)** compiles the GLSL of OpenGL games to SPIR-V for it.
 - **[MacNativeGames](https://github.com/ly05010419/MacNativeGames)** (MIT): the GPU widening of 8-bit indices and in-pass clears in `dm/gfx/nvn/nvn_mtl.m`, and the visibility-counter lowering in the shader translator.
 
-## Games nxnative plays
+## Other game profiles
 
-The games upstream tests on Mac or iPhone, with their notes in [dm/games](dm/games/README.md#games). This fork does not test them. Under a game, "60 fps with 1.2.0" means it runs at 60 fps (30 on the Switch) with that update.
+The repository still carries the profiles and notes nxnative wrote for these games ([dm/games](dm/games/README.md#games)). They are not tested here. Under a game, "60 fps with 1.2.0" means it runs at 60 fps (30 on the Switch) with that update.
 
 <details>
 <summary>Show the gallery</summary>
