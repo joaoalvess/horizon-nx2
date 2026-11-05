@@ -48,7 +48,144 @@ static const uint8_t vp9[] = {
     0xff,0xff,0xff,0xf2,0x2a,0xc0,0x00,
 };
 
-int main(void) {
+// The pre-NV12 AV1 ownership copy, kept as an independent byte-for-byte readback oracle.
+static vpx_image_t *old_av1_i420(const mav1_picture *p) {
+    vpx_image_t *im = vpx_img_alloc(NULL, VPX_IMG_FMT_I420, p->w, p->h, 1); assert(im);
+    im->cs = p->matrix == 2 ? VPX_CS_BT_709 : p->matrix == 5 ? VPX_CS_BT_2020 : VPX_CS_BT_601;
+    im->range = p->full_range ? VPX_CR_FULL_RANGE : VPX_CR_STUDIO_RANGE;
+    for (int y = 0; y < p->h; y++) memcpy(im->planes[0] + (size_t)y * im->stride[0], p->y + (size_t)y * p->ystride, p->w);
+    for (int y = 0; y < (p->h + 1) / 2; y++) for (int x = 0; x < (p->w + 1) / 2; x++) {
+        im->planes[1][(size_t)y * im->stride[1] + x] = p->uv[(size_t)y * p->uvstride + 2 * x];
+        im->planes[2][(size_t)y * im->stride[2] + x] = p->uv[(size_t)y * p->uvstride + 2 * x + 1];
+    }
+    return im;
+}
+static void tail_untouched(const uint8_t *p, size_t n) { for (size_t i = 0; i < n; i++) assert(p[i] == 0xa5); }
+
+static void same_av1_output(vpx_image_t *im, const vpx_image_t *old, int w, int h) {
+    enum { TAIL = 32 };
+    size_t yn = (size_t)w * h, un = yn / 2, rn = yn * 4;
+    uint8_t *expected = malloc(rn + TAIL), *out = malloc(rn + TAIL), *y = malloc(yn + TAIL), *uv = malloc(un + TAIL);
+    assert(expected && out && y && uv);
+    cv_pool pool = {.magic = CV_MAGIC, .count = 1, .img = &im}; cv_pool *handle = &pool;
+    memset(expected, 0xa5, rn + TAIL); memset(out, 0xa5, rn + TAIL);
+    md_nv12(old, expected, w, h);
+    assert(!h_cv_nv12(&handle, 0, 0, 0, w, h, out, w, yn + TAIL, out + yn, w, un + TAIL));
+    assert(!memcmp(out, expected, yn + un)); tail_untouched(out + yn + un, TAIL);
+    // Explicitly check visible samples and black padding, including the rounded-up chroma of odd I420 pictures.
+    for (int row = 0; row < h; row++) for (int x = 0; x < w; x++)
+        assert(out[(size_t)row * w + x] == (row < (int)im->d_h && x < (int)im->d_w ? im->planes[0][(size_t)row * im->stride[0] + x] : 16));
+    for (int row = 0; row < h / 2; row++) for (int x = 0; x < w; x++) {
+        uint8_t value = 128;
+        if (row < (int)(old->d_h + 1) / 2 && x / 2 < (int)(old->d_w + 1) / 2)
+            value = old->planes[1 + (x & 1)][(size_t)row * old->stride[1 + (x & 1)] + x / 2];
+        assert(out[yn + (size_t)row * w + x] == value);
+    }
+    memset(y, 0xa5, yn + TAIL); memset(uv, 0xa5, un + TAIL);
+    assert(!h_cv_nv12(&handle, 0, 0, 0, w, h, y, w, yn + TAIL, uv, w, un + TAIL));
+    assert(!memcmp(y, expected, yn) && !memcmp(uv, expected + yn, un));
+    tail_untouched(y + yn, TAIL); tail_untouched(uv + un, TAIL);
+    memset(expected, 0xa5, rn + TAIL); memset(out, 0xa5, rn + TAIL);
+    md_rgba(old, expected, w, h);
+    assert(!h_cv_rgba(&handle, 0, 0, 0, w, h, out, w * 4, rn + TAIL));
+    assert(!memcmp(out, expected, rn)); tail_untouched(out + rn, TAIL);
+    // Both tight and 64-byte-aligned native rows must match RGBA readback; row padding stays untouched.
+    pool.w = w; pool.h = h; pool.native = 1; pool.size = native_size(w, h);
+    pool.mem = malloc(pool.size); assert(pool.mem); memset(pool.mem, 0xa5, pool.size);
+    pool_native_write(&pool, 0, im);
+    size_t stride = native_stride(w);
+    for (int row = 0; row < h; row++) {
+        assert(!memcmp(pool.mem + (size_t)row * stride, expected + (size_t)row * w * 4, w * 4));
+        tail_untouched(pool.mem + (size_t)row * stride + w * 4, stride - w * 4);
+    }
+    tail_untouched(pool.mem + stride * h, pool.size - stride * h);
+    free(pool.mem); free(expected); free(out); free(y); free(uv);
+}
+
+static void patterned_av1(void) {
+    static const int dims[][2] = {{2, 2}, {30, 10}, {32, 18}, {34, 20}, {31, 19}, {31, 20}, {32, 19}};
+    static const int matrices[] = {0, 1, 2, 5};
+    for (size_t i = 0; i < sizeof dims / sizeof dims[0]; i++) {
+        int w = dims[i][0], h = dims[i][1], even = !(w & 1) && !(h & 1);
+        size_t ys = w + 7, us = 2 * ((w + 1) / 2) + 13;
+        uint8_t *y = malloc(ys * h), *uv = malloc(us * ((h + 1) / 2)); assert(y && uv);
+        memset(y, 0xee, ys * h); memset(uv, 0xdd, us * ((h + 1) / 2));
+        for (int row = 0; row < h; row++) for (int x = 0; x < w; x++) y[(size_t)row * ys + x] = (uint8_t)(17 * row + 29 * x);
+        for (int row = 0; row < (h + 1) / 2; row++) for (int x = 0; x < 2 * ((w + 1) / 2); x++) uv[(size_t)row * us + x] = (uint8_t)(43 * row + 53 * x + 7);
+        for (size_t m = 0; m < sizeof matrices / sizeof matrices[0]; m++) for (int full = 0; full < 2; full++) {
+            mav1_picture pic = {y, uv, ys, us, w, h, matrices[m], full};
+            vpx_image_t *im = av1_copy(&pic), *old = old_av1_i420(&pic); assert(im);
+            assert(im->fmt == (even ? VPX_IMG_FMT_NV12 : VPX_IMG_FMT_I420) && im->img_data_owner);
+            assert(im->d_w == (unsigned)w && im->d_h == (unsigned)h && im->cs == old->cs && im->range == old->range);
+            int ew = (w + 1) & ~1, eh = (h + 1) & ~1;
+            same_av1_output(im, old, ew, eh);
+            same_av1_output(im, old, ew > 2 ? ew - 2 : 2, eh > 2 ? eh - 2 : 2);
+            same_av1_output(im, old, ew + 4, eh + 4);
+            same_av1_output(im, old, ew + 2, eh > 2 ? eh - 2 : 2);
+            same_av1_output(im, old, ew > 2 ? ew - 2 : 2, eh + 2);
+            vpx_img_free(im); vpx_img_free(old);
+        }
+        // The owned picture must survive overwriting and freeing both padded decoder planes.
+        mav1_picture pic = {y, uv, ys, us, w, h, 2, 1};
+        vpx_image_t *im = av1_copy(&pic), *old = old_av1_i420(&pic); assert(im);
+        memset(y, 0, ys * h); memset(uv, 255, us * ((h + 1) / 2)); free(y); free(uv);
+        same_av1_output(im, old, (w + 1) & ~1, (h + 1) & ~1);
+        vpx_img_free(im); vpx_img_free(old);
+    }
+}
+
+static void av1_pool_lifetime(void) {
+    _Alignas(16) uint8_t dec[0x400] = {0}, pt[0x40] = {0};
+    cv_pref pref = h_cv_pref(64, 64, 3, 0); uint64_t size, align, id; uint32_t idx; cv_sync sync;
+    assert(!h_cv_poolsize(&size, &align, &pref, 1));
+    void *mem = malloc(size); assert(mem && !h_cv_pool(pt, mem, size, &pref, 1, 0));
+    uint32_t native = h_cv_native(pt, 0); assert(native);
+    assert(!h_cv_av1init2(dec, 0x10000, 64, 64, 1, 1, 3));
+    assert(!h_cv_av1reg(dec, 0, pt, 0) && !h_cv_av1acq(&idx, &sync, dec) && idx == 0);
+    h_cv_av1rel(dec, 0, sync); assert(!h_cv_av1acq(&idx, &sync, dec) && !h_gs_trywait(&sync));
+    assert(!h_cv_av1submit(&id, dec, av1, sizeof av1, 1234567, true) && id == 1 && h_gs_trywait(&sync));
+    uint16_t w, h, cw, ch; int64_t ts; bool eos;
+    assert(!h_cv_av1props(&w, &h, &cw, &ch, &ts, &eos, dec, 0) && w == 64 && h == 64 && cw == 64 && ch == 64 && ts == 1234567 && eos);
+    cv_pool *pool = pool_of(pt); vpx_image_t *retained = pool->img[0]; assert(retained && retained->fmt == VPX_IMG_FMT_NV12);
+    // Independent old-path oracle from the same backend, before its borrowed planes expire.
+    mav1_picture pic; assert(mav1_decode(cv_of(dec)->av1, av1, sizeof av1, &pic) == 1);
+    vpx_image_t *old = old_av1_i420(&pic);
+    uint8_t rgba[64 * 64 * 4]; md_rgba(old, rgba, 64, 64); assert(!memcmp(mem, rgba, sizeof rgba));
+    same_av1_output(retained, old, 64, 64);
+    for (int i = 0; i < CV_HOLD; i++) assert(!h_cv_av1submit(&id, dec, av1, sizeof av1, 2000 + i, false));
+    assert(cv_of(dec)->nheld == CV_HOLD && !ev_set(dec + CV_EVENT_OFF));
+    assert(h_cv_av1submit(&id, dec, av1, sizeof av1, 9999, false) == CV_BUSY);
+    same_av1_output(retained, old, 64, 64);   // further decodes reused the backend storage
+    h_cv_av1rel(dec, 0, sync); assert(!h_cv_av1acq(&idx, &sync, dec) && sync.gen == 2 && h_gs_trywait(&sync));
+    assert(cv_of(dec)->nheld == CV_HOLD - 1 && ev_set(dec + CV_EVENT_OFF));
+    assert(!h_cv_av1props(&w, &h, &cw, &ch, &ts, &eos, dec, 0) && ts == 2000 && !eos);
+    retained = pool->img[0]; same_av1_output(retained, old, 64, 64);   // replacement freed the previous owned picture
+    assert(!h_cv_av1flush(dec) && !cv_of(dec)->nheld && pool->img[0] == retained);
+    same_av1_output(retained, old, 64, 64);
+    h_cv_av1rel(dec, 0, sync); assert(!h_cv_av1acq(&idx, &sync, dec) && !h_gs_trywait(&sync));
+    assert(pool->img[0] == retained); same_av1_output(retained, old, 64, 64);   // release alone retains it
+    assert(!h_cv_av1submit(&id, dec, NULL, 0, 0, true) && h_gs_trywait(&sync));
+    assert(!h_cv_av1props(&w, &h, &cw, &ch, &ts, &eos, dec, 0) && eos && !w && !h && pool->img[0] == retained);
+    assert(!h_cv_av1fin(dec) && !cv_of(dec));
+    same_av1_output(retained, old, 64, 64);   // pool picture outlives reset and decoder destruction
+    // Finalizing a pool while registered must also free its owned NV12 without leaving a decoder reference to it.
+    assert(!h_cv_av1init2(dec, 0x10000, 64, 64, 1, 1, 3));
+    assert(!h_cv_av1reg(dec, 0, pt, 0) && !h_cv_av1acq(&idx, &sync, dec));
+    h_cv_poolfin(pt); assert(!pool_of(pt) && !cv_of(dec)->buf[0].pool);
+    uint8_t *nm; uint64_t nz; uint32_t nw, nh, ns;
+    assert(!dm_native_image(native, &nm, &nz, &nw, &nh, &ns)); free(mem);
+    h_cv_av1rel(dec, 0, sync); assert(!h_cv_av1acq(&idx, &sync, dec) && !h_gs_trywait(&sync));
+    assert(!h_cv_av1submit(&id, dec, av1, sizeof av1, 3000, false) && h_gs_trywait(&sync));
+    assert(!h_cv_av1fin(dec)); vpx_img_free(old);
+}
+
+int main(int argc, char **argv) {
+    patterned_av1();
+    // A focused software check for machines where VideoToolbox cannot create the unrelated H.264 session. The default check still requires every codec.
+    if (argc == 2 && !strcmp(argv[1], "--av1-only")) {
+        setenv("DM_AV1_DAV1D", "1", 1); av1_pool_lifetime(); unsetenv("DM_AV1_DAV1D");
+        puts("t_codec_video: AV1 acceptance passed (dav1d)"); return 0;
+    }
     _Alignas(16) static uint8_t dec[0x400], pool[3][0x40], spt[0x80], mem[16 * 16 * 4];
     uint64_t size, align, id; uint32_t idx; cv_sync sync; uint16_t w, h, cw, ch; int64_t ts; bool eos;
 
@@ -186,6 +323,7 @@ int main(void) {
             for (int y = 0; y < 32; y++) for (int x = 0; x < 64; x += 2) { assert(abs(pic.uv[(size_t)y * pic.uvstride + x] - 90) <= 6); assert(abs(pic.uv[(size_t)y * pic.uvstride + x + 1] - 240) <= 6); }
             mav1_reset(a); assert(mav1_decode(a, delimiter, sizeof delimiter, &pic) == 0);   // a new stream: nothing until its sequence header
             mav1_free(a);
+            av1_pool_lifetime();
         }
         unsetenv("DM_AV1_DAV1D");
     }
