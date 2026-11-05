@@ -1,15 +1,15 @@
 # Overnight brief: Ocarina of Time on the MacBook Pro
 
-You are one of two autonomous agents working through the night while the owner sleeps. Do not ask questions: decide, write the decision down, continue. Codex is the implementer, Grok the driver and analyst; both read this whole brief.
+You are the lead of tonight's work, an autonomous agent working through the night while the owner sleeps. Do not ask questions: decide, write the decision down, continue. You plan, drive the game, look at what it shows and decide what to do next; Codex (the Codex CLI on this Mac) is your helper, and you hand it code work as described under Working with Codex.
 
 The owner's goal: The Legend of Zelda: Ocarina of Time (Switch 2, title `0400486024DEC000`, update v131072) playable on Apple silicon through this repository's host. Tonight's machine is the MacBook Pro M1 8 GB; the owner plays on a MacBook Air M4 16 GB. Absolute speed here will be worse. What counts is what carries over: fixes that make the game correct, and changes that make it faster on any Mac, measured as before / after ratios on the same machine.
 
 ## Start
 
 1. The SSD: `/Volumes/Hangar` (APFS, encrypted) holds the game, its build folder and its work folder. If it is not mounted, do only the work of the Fallback section and say so at the top of the board.
-2. The code: clone `joaoalvess/horizon-nx2` (with `gh` or `git`, whichever is authenticated) into `~/Developer/horizon-zelda`, branch `zelda`. Codex creates `zelda-night` from it and is the only agent that commits.
+2. The code: clone `joaoalvess/horizon-nx2` (with `gh` or `git`, whichever is authenticated) into `~/Developer/horizon-zelda`, branch `zelda`, and create `zelda-night` from it. All of tonight's commits go there.
 3. Read, in this order: `agents/zelda/plan.md` (its Handoff section first, then the Boots table, then Open), `CLAUDE.md`, `docs/agents/README.md`, `docs/agents/03-bringup.md`, `docs/agents/06-dev-loop.md`, `docs/development.md` (building the host by hand, routes, `scripts/bench.py`). Search `docs/agents/symptoms.md` for the text of every failure before working on it.
-4. Tools: Xcode is installed. Install the .NET SDK with Homebrew if `dotnet` is missing (the translator is C#). Make the Python venv on the SSD (`/Volumes/Hangar/venvs/nxnative`; packages: lz4, capstone, fontTools, zbic, nsz), not in the home folder.
+4. Tools: Xcode and Codex (`/opt/homebrew/bin/codex`) are installed. Install the .NET SDK with Homebrew if `dotnet` is missing (the translator is C#). Make the Python venv on the SSD (`/Volumes/Hangar/venvs/nxnative`; packages: lz4, capstone, fontTools, zbic, nsz), not in the home folder.
 5. Build a host on this machine (`docs/development.md`; `make -C dm/host GAME=0400486024DEC000` with `DM_GAMES_DIR=/Volumes/Hangar/Games/ZeldaOcarinaOfTime_v131072/0400486024DEC000_build/profile`) into a new folder `<work>/hosts/pro1/`. Do not overwrite the Air's hosts (`z1`-`z6`). If it fails to build or crashes with an illegal instruction, check the compiler's CPU flags.
 6. First boot: does the game run here at all? The guest wants about 9 GB of memory and this Mac has 8 GB. Boot headless, muted, through the guard, for 300 s with a fresh save, with screenshots at frames 900, 1800 and 2700. If memory makes it impossible (swap growth stopped by the guard, a crash at allocation), find whether a host limit can be lowered without changing what the game does: a root cause, documented. Only then fall back.
 
@@ -40,25 +40,42 @@ The owner's goal: The Legend of Zelda: Ocarina of Time (Switch 2, title `0400486
    - The chain bump comes only after those pass. It rebuilds every Zelda library, which takes hours here.
    - Until then, boots keep the pinned experiment setup (`xlate_fix/dm4`, chain `7186a88fd701`).
 
-## Roles
+## Working with Codex
 
-- **Codex (implementer):**
-  - code changes, translator and host builds, shader rebuilds;
-  - unit tests: `make -C dm/gfx/tests GAME=0400486024DEC000 <test>`, and `dm/gfx/tests/test_dmsh_*.py` with `DMSH_TEST_XLATE` set to a translator built from the sources;
-  - commits on `zelda-night`.
+- Hand Codex one bounded task at a time:
 
-  It takes tasks from the board and marks each done with its commit.
-- **Grok (driver and analyst):**
-  - boots, routes, screenshots and their analysis, GPU profiles;
-  - triage: each problem goes to the board as a task with its evidence (log lines, frame, screenshot path) and, once found, its root cause.
+  ```
+  codex exec -C ~/Developer/horizon-zelda -s workspace-write --add-dir /Volumes/Hangar/Games/ZeldaOcarinaOfTime_v131072 -o <work>/night/codex/<task id>.md "<task>"
+  ```
 
-  Grok does not edit the repository. It writes scripts only under `night/`.
-- **`night/board.md`:**
+  Its final message lands in that file.
+- **What to give Codex:**
+  - reading code to find a root cause from your evidence;
+  - implementing a fix;
+  - translator and host builds;
+  - unit tests that need no GPU;
+  - shader rebuilds;
+  - the task's commit on `zelda-night`.
+- **What to keep for yourself:**
+  - boots, routes, screenshots and what they show;
+  - GPU profiles, GPU tests (`test_dmsh_hmma.py`) and the Metal harnesses: the guard, the GPU and the network run outside Codex's sandbox;
+  - installs, `dotnet restore` and pushes;
+  - the decisions and the board.
+- **Every task prompt names:**
+  - the goal;
+  - the evidence: log lines, the frame, what the screenshot shows, paths;
+  - the files to start from and what is already ruled out;
+  - the acceptance check: a test, a build or a comparison;
+  - "follow the Rules section of `agents/zelda/night_prompt.md`";
+  - "end with a short report: what changed, the commit, what the check gave, what is open".
+- **One checkout:** one Codex task at a time in the checkout. A task in parallel gets its own `git worktree` on its own branch, merged into `zelda-night` after review.
+- **Review before you trust it:** read the diff, run the check yourself, and boot to see the effect. A Codex result counts only after that.
+- **`night/board.md`, written by you:**
   - a status block at the top, rewritten in place at each milestone, with times from `date`;
-  - Tasks, one line each: id, owner, state, evidence, result;
+  - Tasks, one line each: id, owner (you or Codex), state, evidence, result;
   - a Log, appended.
 
-  Each agent rewrites only its own lines. Before a long job, write in the board what it is and how long it should take.
+  Before a long job, write in the board what it is and how long it should take. Codex's reports stay in `night/codex/`.
 
 ## Rules
 
@@ -68,7 +85,7 @@ The owner's goal: The Legend of Zelda: Ocarina of Time (Switch 2, title `0400486
 - **Git:**
   - Commits are English conventional commits (`fix(shaders): ...`), small, with only the files of their item.
   - No Co-Authored-By and no attribution lines of any kind.
-  - Push `zelda-night` to `origin` at each milestone. Never force-push. Never push to `main`, `refactor` or `zelda`.
+  - You push `zelda-night` to `origin` at each milestone. Never force-push. Never push to `main`, `refactor` or `zelda`.
 - **The repository is public.** Never commit or upload:
   - game files or keys;
   - anything extracted from the game: shaders, MSL, metallibs, SPIR-V;
@@ -83,7 +100,7 @@ The owner's goal: The Legend of Zelda: Ocarina of Time (Switch 2, title `0400486
   - No IPA builds, no signing, nothing installed on devices.
   - Delete nothing on the SSD outside `night/` and your own build folders.
 - **A GPU hang** (the display corrupts or flashes, WindowServer restarts, a kernel panic report): stop booting for the rest of the night, write down the last command and frame, and continue offline. Do not reboot.
-- **Never stop for a question.** When a decision is the owner's, take the reversible choice, note it under "For the owner" in the board, and keep going.
+- **Never stop for a question.** Codex runs non-interactively and must not wait on one either. When a decision is the owner's, take the reversible choice, note it under "For the owner" in the board, and keep going.
 
 ## Fallback (no SSD, or the game cannot run here)
 
