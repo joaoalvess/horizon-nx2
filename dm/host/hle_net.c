@@ -1,6 +1,7 @@
 // Networking (out of scope: online play/friends/store/cloud saves): all hooked up as "network unavailable", the game takes the offline branch.
 // Cuts: nifm reports no network; socket only hooks up Initialize (returns success, creates no session), the rest of socket/ssl/friends are hooked up as failures when they come into use.
 #include "hle.h"
+#include <pthread.h>
 #include <stdatomic.h>
 
 HLE_FORCE("_ZN2nn6socket10InitializeERKNS0_6ConfigE", "connects to the bsd socket service; offline, creates no session (cut)", Result, h_socket_Initialize, const void *cfg) { (void)cfg; return RES_OK; }
@@ -43,11 +44,49 @@ static int sk_fail(void) { t_skerr = SK_ENETDOWN; return -1; }
 void dm_guest_sleep_ns(int64_t ns);
 static int sk_idle(int64_t ms) { dm_guest_sleep_ns((ms < 0 ? 100 : ms) * 1000000); return 0; }
 typedef struct { int32_t fd; int16_t events, revents; } sk_pollfd;
+enum { EFD_BASE = 0x40, EFD_MAX = 64, EFD_SEMAPHORE = 1, EFD_NONBLOCK = 4, SK_EBADF = 9, SK_EINVAL = 22, SK_EMFILE = 24, SK_EAGAIN = 35, SK_POLLIN = 1, SK_POLLOUT = 4, SK_POLLNVAL = 0x20 };
+static struct { int used, flags; uint64_t count; } g_efd[EFD_MAX];
+static pthread_mutex_t g_efd_mu = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t g_efd_cv = PTHREAD_COND_INITIALIZER;
+static int sk_err(int e) { t_skerr = e; return -1; }
+static int efd_slot(int fd) { unsigned i = (unsigned)fd - EFD_BASE; return i < EFD_MAX && g_efd[i].used ? (int)i : -1; }
+static void efd_wait(int64_t end_ns) {
+    int64_t left = end_ns - (int64_t)now_ns();
+    if (left <= 0) return;
+    struct timespec ts; clock_gettime(CLOCK_REALTIME, &ts);
+    int64_t t = ts.tv_nsec + left; ts.tv_sec += t / 1000000000; ts.tv_nsec = t % 1000000000;
+    pthread_cond_timedwait(&g_efd_cv, &g_efd_mu, &ts);
+}
 int dm_sk_poll(void *fds, uint64_t n, int ms) {   // also hle_offline.c's plain pollfd form
     sk_pollfd *p = fds;
-    for (uint64_t i = 0; i < n; i++) if (p[i].fd >= 0) return sk_fail();
-    for (uint64_t i = 0; i < n; i++) p[i].revents = 0;
-    return sk_idle(ms);
+    int efds = 0, ready = 0;
+    pthread_mutex_lock(&g_efd_mu);
+    for (uint64_t i = 0; i < n; i++) if (p[i].fd >= 0) { if (efd_slot(p[i].fd) < 0) { pthread_mutex_unlock(&g_efd_mu); return sk_fail(); } efds++; }
+    if (!efds) {
+        pthread_mutex_unlock(&g_efd_mu);
+        for (uint64_t i = 0; i < n; i++) p[i].revents = 0;
+        return sk_idle(ms);
+    }
+    int64_t end = (int64_t)now_ns() + (ms < 0 ? 100 : ms) * 1000000LL;
+    for (;;) {
+        ready = 0;
+        for (uint64_t i = 0; i < n; i++) {
+            int s = p[i].fd >= 0 ? efd_slot(p[i].fd) : -1;
+            p[i].revents = p[i].fd < 0 ? 0 : s < 0 ? SK_POLLNVAL : ((p[i].events & SK_POLLIN) && g_efd[s].count ? SK_POLLIN : 0) | (p[i].events & SK_POLLOUT);
+            ready += p[i].revents != 0;
+        }
+        if (ready || (int64_t)now_ns() >= end) break;
+        efd_wait(end);
+    }
+    pthread_mutex_unlock(&g_efd_mu);
+    return ready;
+}
+static int sk_close(int s) {
+    pthread_mutex_lock(&g_efd_mu);
+    int i = efd_slot(s);
+    if (i >= 0) { g_efd[i].used = 0; pthread_cond_broadcast(&g_efd_cv); }
+    pthread_mutex_unlock(&g_efd_mu);
+    return i >= 0 ? 0 : sk_fail();
 }
 int dm_sk_select(int nfds, const uint64_t *r, const uint64_t *w, const uint64_t *e, const int64_t *tv) {   // fd_set: 1024 bits; timeval: {i64 seconds, i64 microseconds}
     const uint64_t *sets[3] = {r, w, e};
@@ -59,17 +98,44 @@ SKF("_ZN2nn6socket4BindEiPKNS0_8SockAddrEj", h_sk_Bind, int s, const void *a, un
 SKF("_ZN2nn6socket7ConnectEiPKNS0_8SockAddrEj", h_sk_Connect, int s, const void *a, unsigned n) { (void)s; (void)a; (void)n; return sk_fail(); }
 SKF("_ZN2nn6socket6ListenEii", h_sk_Listen, int s, int n) { (void)s; (void)n; return sk_fail(); }
 SKF("_ZN2nn6socket6AcceptEiPNS0_8SockAddrEPj", h_sk_Accept, int s, void *a, unsigned *n) { (void)s; (void)a; (void)n; return sk_fail(); }
-SKF("_ZN2nn6socket5CloseEi", h_sk_Close, int s) { (void)s; return sk_fail(); }
+HLE_FORCE("_ZN2nn6socket5CloseEi", "bsd socket service: closes an event counter; any other descriptor (cut) returns -1/ENETDOWN", int, h_sk_Close, int s) { return sk_close(s); }
 SKF("_ZN2nn6socket11GetPeerNameEiPNS0_8SockAddrEPj", h_sk_GetPeerName, int s, void *a, unsigned *n) { (void)s; (void)a; (void)n; return sk_fail(); }
 SKF("_ZN2nn6socket11GetSockNameEiPNS0_8SockAddrEPj", h_sk_GetSockName, int s, void *a, unsigned *n) { (void)s; (void)a; (void)n; return sk_fail(); }
 SKF("_ZN2nn6socket10GetSockOptEiNS0_5LevelENS0_6OptionEPvPj", h_sk_GetSockOpt, int s, int l, int o, void *v, unsigned *n) { (void)s; (void)l; (void)o; (void)v; (void)n; return sk_fail(); }
 SKF("_ZN2nn6socket10SetSockOptEiNS0_5LevelENS0_6OptionEPKvj", h_sk_SetSockOpt, int s, int l, int o, const void *v, unsigned n) { (void)s; (void)l; (void)o; (void)v; (void)n; return sk_fail(); }
 SKF("_ZN2nn6socket5FcntlEiNS0_12FcntlCommandEz", h_sk_Fcntl, int s, int c) { (void)s; (void)c; return sk_fail(); }
-SKF("_ZN2nn6socket4PollEPNS0_6PollFdEmi", h_sk_Poll, void *f, unsigned long n, int t) { return dm_sk_poll(f, n, t); }
+HLE_FORCE("_ZN2nn6socket4PollEPNS0_6PollFdEmi", "bsd socket service: waits on event counters; any other descriptor (cut) returns -1/ENETDOWN", int, h_sk_Poll, void *f, unsigned long n, int t) { return dm_sk_poll(f, n, t); }
 SKF("_ZN2nn6socket6SelectEiPNS0_5FdSetES2_S2_PNS0_7TimeValE", h_sk_Select, int n, void *r, void *w, void *e, void *t) { return dm_sk_select(n, r, w, e, t); }
-SKF("_ZN2nn6socket7EventFdEmNS0_12EventFdFlagsE", h_sk_EventFd, unsigned long v, int f) { (void)v; (void)f; return sk_fail(); }
-SKF("_ZN2nn6socket11EventFdReadEiPm", h_sk_EventFdRead, int s, unsigned long *v) { (void)s; (void)v; return sk_fail(); }
-SKF("_ZN2nn6socket12EventFdWriteEim", h_sk_EventFdWrite, int s, unsigned long v) { (void)s; (void)v; return sk_fail(); }
+HLE_FORCE("_ZN2nn6socket7EventFdEmNS0_12EventFdFlagsE", "bsd socket service EventFd: a local event counter, which Horizon's bsd service makes offline too (flags: semaphore 1, non-blocking 4)", int, h_sk_EventFd, unsigned long v, int f) {
+    pthread_mutex_lock(&g_efd_mu);
+    int i = 0;
+    while (i < EFD_MAX && g_efd[i].used) i++;
+    if (i < EFD_MAX) { g_efd[i].used = 1; g_efd[i].flags = f; g_efd[i].count = v; }
+    pthread_mutex_unlock(&g_efd_mu);
+    return i < EFD_MAX ? EFD_BASE + i : sk_err(SK_EMFILE);
+}
+HLE_FORCE("_ZN2nn6socket11EventFdReadEiPm", "bsd socket service: reads an event counter (all of it, or 1 as a semaphore; waits unless non-blocking)", int, h_sk_EventFdRead, int s, unsigned long *v) {
+    if (!v) return -1;
+    pthread_mutex_lock(&g_efd_mu);
+    int i, r = 0;
+    while ((i = efd_slot(s)) >= 0 && !g_efd[i].count && !(g_efd[i].flags & EFD_NONBLOCK)) efd_wait((int64_t)now_ns() + 100000000);
+    if (i < 0) r = sk_err(SK_EBADF);
+    else if (!g_efd[i].count) r = sk_err(SK_EAGAIN);
+    else if (g_efd[i].flags & EFD_SEMAPHORE) { *v = 1; g_efd[i].count--; }
+    else { *v = g_efd[i].count; g_efd[i].count = 0; }
+    pthread_mutex_unlock(&g_efd_mu);
+    return r;
+}
+HLE_FORCE("_ZN2nn6socket12EventFdWriteEim", "bsd socket service: adds to an event counter and wakes its waiters", int, h_sk_EventFdWrite, int s, unsigned long v) {
+    pthread_mutex_lock(&g_efd_mu);
+    int i = efd_slot(s), r = 0;
+    if (i < 0) r = sk_err(SK_EBADF);
+    else if (v == UINT64_MAX) r = sk_err(SK_EINVAL);
+    else if (g_efd[i].count > UINT64_MAX - 1 - v) r = sk_err(SK_EAGAIN);
+    else { g_efd[i].count += v; pthread_cond_broadcast(&g_efd_cv); }
+    pthread_mutex_unlock(&g_efd_mu);
+    return r;
+}
 SKF("_ZN2nn6socket17ResolverGetOptionEPNS0_14ResolverOptionENS0_17ResolverOptionKeyE", h_sk_ResGet, void *o, int k) { (void)o; (void)k; return sk_fail(); }
 SKF("_ZN2nn6socket17ResolverSetOptionERKNS0_14ResolverOptionE", h_sk_ResSet, const void *o) { (void)o; return sk_fail(); }
 HLE_FORCE("_ZN2nn6socket4RecvEiPvmNS0_7MsgFlagE", "bsd socket service (cut)", long, h_sk_Recv, int s, void *b, unsigned long n, int f) { (void)s; (void)b; (void)n; (void)f; return sk_fail(); }
@@ -85,13 +151,13 @@ HLE_FORCE("_ZN2nn6socket12GetLastErrorEv", "socket error code kept by the host",
 SKF("nnsocketSocket", h_nsk_Socket, int a, int b, int c) { (void)a; (void)b; (void)c; return sk_fail(); }
 SKF("nnsocketBind", h_nsk_Bind, int s, const void *a, unsigned n) { (void)s; (void)a; (void)n; return sk_fail(); }
 SKF("nnsocketConnect", h_nsk_Connect, int s, const void *a, unsigned n) { (void)s; (void)a; (void)n; return sk_fail(); }
-SKF("nnsocketClose", h_nsk_Close, int s) { (void)s; return sk_fail(); }
+HLE_FORCE("nnsocketClose", "bsd socket service: closes an event counter; any other descriptor (cut) returns -1/ENETDOWN", int, h_nsk_Close, int s) { return sk_close(s); }
 SKF("nnsocketGetPeerName", h_nsk_GetPeerName, int s, void *a, unsigned *n) { (void)s; (void)a; (void)n; return sk_fail(); }
 SKF("nnsocketGetSockName", h_nsk_GetSockName, int s, void *a, unsigned *n) { (void)s; (void)a; (void)n; return sk_fail(); }
 SKF("nnsocketGetSockOpt", h_nsk_GetSockOpt, int s, int l, int o, void *v, unsigned *n) { (void)s; (void)l; (void)o; (void)v; (void)n; return sk_fail(); }
 SKF("nnsocketSetSockOpt", h_nsk_SetSockOpt, int s, int l, int o, const void *v, unsigned n) { (void)s; (void)l; (void)o; (void)v; (void)n; return sk_fail(); }
 SKF("nnsocketFcntl", h_nsk_Fcntl, int s, int c) { (void)s; (void)c; return sk_fail(); }
-SKF("nnsocketPoll", h_nsk_Poll, void *f, unsigned long n, int t) { return dm_sk_poll(f, n, t); }
+HLE_FORCE("nnsocketPoll", "bsd socket service: waits on event counters; any other descriptor (cut) returns -1/ENETDOWN", int, h_nsk_Poll, void *f, unsigned long n, int t) { return dm_sk_poll(f, n, t); }
 SKF("nnsocketResolverGetOption", h_nsk_ResGet, void *o, int k) { (void)o; (void)k; return sk_fail(); }
 SKF("nnsocketResolverSetOption", h_nsk_ResSet, const void *o) { (void)o; return sk_fail(); }
 HLE_FORCE("nnsocketRecv", "bsd socket service (cut)", long, h_nsk_Recv, int s, void *b, unsigned long n, int f) { (void)s; (void)b; (void)n; (void)f; return sk_fail(); }
