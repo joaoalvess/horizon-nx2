@@ -518,9 +518,9 @@ class StorageSlotSum(Translated):
     LDG = (0x000fe20000000900, 0x0000000002047381)   # LDG.E R4, [R2.64]
     STG = (0x000fe20000000900, 0x0000000402007386)   # STG.E [R2.64], R4
 
-    def iadd3(self, rd, ra, rb=None, cbuf=None):   # IADD3 Rd, Ra, Rb, RZ or IADD3 Rd, Ra, c[0x0][cbuf], RZ
+    def iadd3(self, rd, ra, rb=None, cbuf=None, pred=7):   # IADD3 Rd, Ra, Rb, RZ or IADD3 Rd, Ra, c[0x0][cbuf], RZ
         lo = cbuf << 38 | 0xa10 if cbuf is not None else rb << 32 | 0x210
-        return inst(0x000fe20007ffe0ff, lo | ra << 24 | rd << 16 | 0x7000)
+        return inst(0x000fe20007ffe0ff, lo | ra << 24 | rd << 16 | pred << 12)
 
     def msl(self, *address):   # slot 4's address at 0x50 of the shader's c0 (nvn2_cs: 5 storage slots from 0x10), which the translator reads as 0x350
         code = s2r(0, TID_X) + s2r(1, TID_Y) + b''.join(address) + self.iadd3(3, 0xff, cbuf=0x54) + inst(*self.LDG) + sts(0x20, 4) + inst(*self.STG) + inst(*EXIT)
@@ -528,12 +528,53 @@ class StorageSlotSum(Translated):
 
     def test_goes_to_the_slots_storage_buffer(self):
         msl = self.msl(self.iadd3(2, 0, cbuf=0x50), self.iadd3(2, 2, 1))
+        self.assert_slot_offset(msl)
+
+    def assert_slot_offset(self, msl):   # both the load and store subtract the exact base, without rounding it to a host alignment
         self.assertNotIn('reinterpret_cast<device', msl)
         self.assertEqual(len(re.findall(r'- as_type<int>\(\(\*spvDescriptorSet0\.cp_c0\)\._m0\[53\]\.x\)', msl)), 2)
+        self.assertNotIn('& (-16)', msl)
+        self.assertRegex(msl, r'as_type<float>\(\(\*spvDescriptorSet0\.cp_s0\)\._m0\[')
+        self.assertRegex(msl, r'\(\*spvDescriptorSet0\.cp_s0\)\._m0\[[^;]* = as_type<uint>')
+
+    def test_base_in_the_second_operand(self):
+        self.assert_slot_offset(self.msl(self.iadd3(2, 0, cbuf=0x50), self.iadd3(2, 1, 2)))
+
+    def test_nonzero_offsets_survive_the_base_subtraction(self):   # the outer constant Add must not lose its offset; low-word signed boundaries included
+        for offset, literal in ((4, '4'), (0x124, '292'), (0x7ffffffc, '2147483644'), (0x80000000, 'int(0x80000000)'), (0xfffffffc, '(-4)')):
+            with self.subTest(offset=hex(offset)):
+                msl = self.msl(self.iadd3(2, 0, cbuf=0x50), self.iadd3(2, 2, 1), mov(5, offset), self.iadd3(2, 2, 5))
+                self.assert_slot_offset(msl)
+                address = re.search(rf'int (_\d+) = _\d+ \+ {re.escape(literal)};', msl)
+                self.assertTrue(address, msl)
+                self.assertEqual(len(re.findall(rf'{address.group(1)} - as_type<int>\(\(\*spvDescriptorSet0\.cp_c0\)\._m0\[53\]\.x\)', msl)), 2)
+
+    def test_neither_operand_has_a_base_keeps_the_search(self):   # both operands are Adds, but neither contains a c0 base
+        msl = self.msl(mov(5, 4), self.iadd3(5, 0, 5), mov(6, 8), self.iadd3(6, 1, 6), self.iadd3(2, 5, 6))
+        self.assertIn('reinterpret_cast<device', msl)
 
     def test_two_slot_addresses_in_the_sum_keep_the_search(self):   # (tid.x + c0[0x350]) + (tid.y + c0[0x310]): no single base
         msl = self.msl(self.iadd3(2, 0, cbuf=0x50), self.iadd3(1, 1, cbuf=0x10), self.iadd3(2, 2, 1))
         self.assertIn('reinterpret_cast<device', msl)
+
+    def test_two_targets_keep_the_low_high_and_size_checks(self):   # a Phi of simple slot addresses still uses checked multi-target dispatch
+        msl = self.msl(self.iadd3(2, 0, 1), inst(*Shared.ISETP_P0), self.iadd3(2, 0, cbuf=0x50), self.iadd3(2, 1, cbuf=0x10, pred=0))
+        self.assertNotIn('reinterpret_cast<device', msl)
+        helpers = msl[msl.index('static inline'):msl.index('kernel void')]
+        for slot in (49, 53):   # c0[0x310] and c0[0x350]: low subtraction borrows from high, then size and high must match
+            with self.subTest(slot=slot):
+                self.assertEqual(len(re.findall(rf'uint\(_\d+\) < as_type<uint>\(cp_c0\._m0\[{slot}\]\.x\)', helpers)), 2)
+                self.assertEqual(len(re.findall(rf'uint\(_\d+\) < as_type<uint>\(cp_c0\._m0\[{slot}\]\.z\)', helpers)), 2)
+                self.assertEqual(len(re.findall(rf'== as_type<int>\(cp_c0\._m0\[{slot}\]\.y\)', helpers)), 2)
+        self.assertEqual(len(re.findall(r'\+ \(_\d+ \? \(-1\) : 0\)', helpers)), 4)
+
+    def test_sums_on_two_paths_keep_the_pool_search(self):   # needsOffset=false must not pick either sum's nested base while collecting Phi targets
+        for reverse in (False, True):
+            with self.subTest(reverse=reverse):
+                ra, rb = (1, 5) if reverse else (5, 1)
+                msl = self.msl(self.iadd3(2, 0, 1), inst(*Shared.ISETP_P0), self.iadd3(5, 0, cbuf=0x50), self.iadd3(2, ra, rb),
+                               self.iadd3(5, 0, cbuf=0x10), self.iadd3(2, ra, rb, pred=0))
+                self.assertIn('reinterpret_cast<device', msl)
 
 
 if __name__ == '__main__':
