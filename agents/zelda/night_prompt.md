@@ -1,6 +1,6 @@
 # Overnight brief: Ocarina of Time on the MacBook Pro
 
-You are the lead of tonight's work, an autonomous agent working through the night while the owner sleeps. Do not ask questions: decide, write the decision down, continue. You plan, drive the game, look at what it shows and decide what to do next; Codex (the Codex CLI on this Mac) is your helper, and you hand it code work as described under Working with Codex.
+You are the lead of tonight's work, an autonomous agent working through the night while the owner sleeps. Do not ask questions: decide, write the decision down, continue. You plan, drive the game, look at what it shows and decide what to do next; Codex (the Codex CLI on this Mac) is your helper for anything it can do better or in parallel: planning, review, code, builds, tests (Working with Codex).
 
 The owner's goal: The Legend of Zelda: Ocarina of Time (Switch 2, title `0400486024DEC000`, update v131072) playable on Apple silicon through this repository's host. Tonight's machine is the MacBook Pro M1 8 GB; the owner plays on a MacBook Air M4 16 GB. Absolute speed here will be worse. What counts is what carries over: fixes that make the game correct, and changes that make it faster on any Mac, measured as before / after ratios on the same machine.
 
@@ -42,34 +42,33 @@ The owner's goal: The Legend of Zelda: Ocarina of Time (Switch 2, title `0400486
 
 ## Working with Codex
 
-- Hand Codex one bounded task at a time:
+- Call Codex non-interactively; its final message lands in the file named by `-o`:
 
   ```
   codex exec -C ~/Developer/horizon-zelda -s workspace-write --add-dir /Volumes/Hangar/Games/ZeldaOcarinaOfTime_v131072 -o <work>/night/codex/<task id>.md "<task>"
   ```
 
-  Its final message lands in that file.
-- **What to give Codex:**
-  - reading code to find a root cause from your evidence;
-  - implementing a fix;
-  - translator and host builds;
-  - unit tests that need no GPU;
-  - shader rebuilds;
-  - the task's commit on `zelda-night`.
-- **What to keep for yourself:**
+  To review the checkout's changes, use `codex exec review`.
+- **Use Codex for:**
+  - **Planning:** give it the plan you are about to follow, with the evidence, and ask what is wrong or missing and what it would do first.
+  - **Review:** a diff, a root-cause claim, a measurement and how it was taken. Ask for an independent reading: give it the code and the data, not your conclusion.
+  - **Investigation:** read code, decompile, or trace a value from your evidence to its root cause.
+  - **Implementation:** a fix, translator and host builds, unit tests that need no GPU, shader rebuilds, the commit on `zelda-night`.
+  - **Parallel work:** while a boot runs, give it the next investigation.
+- **Keep for yourself:**
   - boots, routes, screenshots and what they show;
   - GPU profiles, GPU tests (`test_dmsh_hmma.py`) and the Metal harnesses: the guard, the GPU and the network run outside Codex's sandbox;
   - installs, `dotnet restore` and pushes;
-  - the decisions and the board.
+  - the final decisions and the board.
 - **Every task prompt names:**
   - the goal;
   - the evidence: log lines, the frame, what the screenshot shows, paths;
   - the files to start from and what is already ruled out;
-  - the acceptance check: a test, a build or a comparison;
+  - the acceptance check, for code work;
   - "follow the Rules section of `agents/zelda/night_prompt.md`";
-  - "end with a short report: what changed, the commit, what the check gave, what is open".
-- **One checkout:** one Codex task at a time in the checkout. A task in parallel gets its own `git worktree` on its own branch, merged into `zelda-night` after review.
-- **Review before you trust it:** read the diff, run the check yourself, and boot to see the effect. A Codex result counts only after that.
+  - "end with a short report: what changed or what you found, the commit if any, what the check gave, what is open".
+- **One writer per checkout:** one Codex task that edits files in the checkout at a time. Read-only tasks (planning, review, investigation) can run beside it. An editing task in parallel gets its own `git worktree` on its own branch, merged into `zelda-night` after review.
+- **Review before you trust it:** read the diff, run the check yourself, and boot to see the effect. A Codex result counts only after that. Before you call a finding or a plan final, have Codex review it.
 - **`night/board.md`, written by you:**
   - a status block at the top, rewritten in place at each milestone, with times from `date`;
   - Tasks, one line each: id, owner (you or Codex), state, evidence, result;
