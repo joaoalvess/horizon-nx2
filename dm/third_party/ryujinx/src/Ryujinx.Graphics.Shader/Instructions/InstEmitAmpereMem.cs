@@ -29,6 +29,7 @@ namespace Ryujinx.Graphics.Shader.Instructions
             x(0x98e, InstName.Red, ARed, N, writesRd: false);
             x(0x9a8, InstName.Atom, AAtomg, N);
             x(0x3a8, InstName.Atom, AAtomg, N);
+            x(0x3a9, InstName.Atom, AAtomgCas, N);
             x(AmpereOpcodes.Ldl, InstName.Ldl, ALdLocalShared, N);
             x(0x984, InstName.Lds, ALdLocalShared, N);
             x(0x387, InstName.Stl, AStLocalShared, N, writesRd: false);
@@ -126,15 +127,15 @@ namespace Ryujinx.Graphics.Shader.Instructions
 
             if (stage != null)
             {
-                // A task or mesh shader's stage input (QueryAmpereStageMemory). Mode 0x78: its workgroup's number; 0x38: a word of the payload its task wrote, [Ra + offset]
+                // A task or mesh shader's stage input (QueryAmpereStageMemory). Mode 0x78: its workgroup's number; 0x38: a word of the payload its task wrote, [Ra + offset]; 0xb8 (output, bit 79): a word of its own stage output
                 int mode = x.Bits(72, 80);
 
-                if (mode != 0x78 && mode != 0x38)
+                if (mode != 0x78 && mode != 0x38 && mode != 0xb8)
                 {
                     throw AFail(context, $"ISBERD mode {mode:x2} in a task or mesh shader");
                 }
 
-                Operand addr = mode == 0x78 ? Const(stage[0]) : context.IAdd(AGpr(x.Ra), Const(stage[1] + (int)x.SignedField(40, 64)));
+                Operand addr = mode == 0x78 ? Const(stage[0]) : context.IAdd(AGpr(x.Ra), Const((mode == 0xb8 ? stage[2] : stage[1]) + (int)x.SignedField(40, 64)));
                 EmitLoad(context, StorageKind.SharedMemory, LsSize2.B32, addr, x.Rd, 0);
                 return;
             }
@@ -361,6 +362,22 @@ namespace Ryujinx.Graphics.Shader.Instructions
             ASet(context, x, res);
         }
 
+        public static void AAtomgCas(EmitterContext context)
+        {
+            AmpereOp x = new(context.CurrOp);
+
+            if (x.Bit(91) || (AtomSize)x.Bits(73, 76) is not (AtomSize.U32 or AtomSize.S32))
+            {
+                throw AFail(context, $"ATOMG.CAS form {x.Bits(64, 96):x8}");
+            }
+
+            (Operand lo, Operand hi) = AGlobalAddress(context, x, 72, 64, 0);
+            Operand expected = x.Rb >= RegisterConsts.RegisterZeroIndex ? Const(0) : Register(x.Rb, RegisterType.Gpr);
+            Operand value = x.Rc >= RegisterConsts.RegisterZeroIndex ? Const(0) : Register(x.Rc, RegisterType.Gpr);
+
+            ASet(context, x, context.AtomicCompareAndSwap(StorageKind.GlobalMemory, lo, hi, expected, value));
+        }
+
         // MEMBAR: the order of this thread's memory operations
         public static void AMembar(EmitterContext context)
         {
@@ -483,45 +500,35 @@ namespace Ryujinx.Graphics.Shader.Instructions
 
         // SURED [Ra], Rb (0x59f): an image reduction through a handle, laid out as SUATOM with no result: the coordinates from Ra, the value in Rb, the handle at 40..59, the dimension
         // at 61..64, the size at 73..76 and the operation at 87..91 (Eglantine's lowering to Maxwell names the fields). Mario Kart World's compute shader adds 1 at (R4, R5) of a 2D
-        // image; its word 2 is SUATOM's in Donkey Kong Bananza's encoding less the predicate result. Only that form has been seen, so another is refused
+        // image; its word 2 is SUATOM's in Donkey Kong Bananza's encoding less the predicate result. The operation is SURED's three bits at 87..90 (Mesa NAK's encoding); another size or form is refused
         public static void ASured(EmitterContext context)
         {
             AmpereOp x = new(context.CurrOp);
 
-            if (x.Bits(64, 96) != 0x0010e000 || x.Bits(59, 61) != 0)
+            if ((x.Bits(64, 96) & ~(0x7 << 23)) != 0x0010e000 || x.Bits(59, 61) != 0)
             {
                 throw AFail(context, $"SURED form {x.Bits(64, 96):x8}");
             }
 
             (int handle, int cbufSlot) = ATexHandle(context, x);
 
-            if (cbufSlot != TextureOperation.DefaultCbufSlot)
-            {
-                throw AFail(context, $"SURED handle in bank {cbufSlot}");
-            }
-
-            EmitSured(context, (SuDim)x.Bits(61, 64), 0, RedOp.Add, SuatomSize.U32, handle, x.Ra, x.Rb, 0, false, isBindless: false);
+            EmitSured(context, (SuDim)x.Bits(61, 64), 0, (RedOp)x.Bits(87, 90), SuatomSize.U32, handle, x.Ra, x.Rb, 0, false, isBindless: false, cbufSlot: cbufSlot);
         }
 
         // SUATOM Rd, [Ra], Rb (0x593): an atomic on an image through a handle, laid out as SUST's (handle 40..59, dimension 61..64) and as ATOMG's (operation
         // 87..91, size 73..76, Pu 81..83). Donkey Kong Bananza's append compute shaders take a counter with it (SUATOM.ADD.U32 on a 1D image, the old value
-        // shuffled to the warp) before their SUST. Another handle bank or a predicate result is not met in a game: refused.
+        // shuffled to the warp) before their SUST. The handle may be in the game's own uniform buffer, as a texture's. A predicate result is not met in a game: refused.
         public static void ASuatom(EmitterContext context)
         {
             AmpereOp x = new(context.CurrOp);
             (int handle, int cbufSlot) = ATexHandle(context, x);
-
-            if (cbufSlot != TextureOperation.DefaultCbufSlot)
-            {
-                throw AFail(context, $"SUATOM handle in bank {cbufSlot}");
-            }
 
             if (x.Bits(81, 84) != 7)
             {
                 throw AFail(context, "SUATOM with a predicate result");
             }
 
-            EmitSuatom(context, (SuDim)x.Bits(61, 64), 0, (SuatomOp)x.Bits(87, 91), (SuatomSize)x.Bits(73, 76), handle, x.Ra, x.Rb, 0, x.Rd, false, isBindless: false, compareAndSwap: false);
+            EmitSuatom(context, (SuDim)x.Bits(61, 64), 0, (SuatomOp)x.Bits(87, 91), (SuatomSize)x.Bits(73, 76), handle, x.Ra, x.Rb, 0, x.Rd, false, isBindless: false, compareAndSwap: false, cbufSlot: cbufSlot);
         }
 
         // BAR.SYNC: the workgroup barrier

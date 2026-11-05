@@ -183,6 +183,11 @@ namespace Ryujinx.Graphics.Shader.Instructions
             EmitSust(context, op.CacheOp, op.Dim, 0, op.TidB, op.Rgba, op.SrcA, op.Dest, 0, useComponents: true, false, isBindless: false);
         }
 
+        private static TextureFormat UniformHandleAtomicFormat(SuatomSize size)
+        {
+            return size is SuatomSize.S32 or SuatomSize.Sd32 ? TextureFormat.R32Sint : TextureFormat.R32Uint;
+        }
+
         private static void EmitSuatom(
             EmitterContext context,
             SuDim dimensions,
@@ -197,7 +202,8 @@ namespace Ryujinx.Graphics.Shader.Instructions
             bool byteAddress,
             bool isBindless,
             bool compareAndSwap,
-            bool hasPredicateResult = false)
+            bool hasPredicateResult = false,
+            int cbufSlot = TextureOperation.DefaultCbufSlot)
         {
             // Preserve source width before descriptor-sized formats are resolved.
             // Other backends retain their existing surface-instruction handling.
@@ -276,7 +282,7 @@ namespace Ryujinx.Graphics.Shader.Instructions
 
             // TODO: FP and 64-bit formats.
             TextureFormat format = size is SuatomSize.Sd32 or SuatomSize.Sd64
-                ? (isBindless ? TextureFormat.Unknown : ShaderProperties.GetTextureFormatAtomic(context.TranslatorContext.GpuAccessor, imm, strict: metalAtomics))
+                ? (isBindless ? TextureFormat.Unknown : (cbufSlot != TextureOperation.DefaultCbufSlot ? UniformHandleAtomicFormat(size) : ShaderProperties.GetTextureFormatAtomic(context.TranslatorContext.GpuAccessor, imm, strict: metalAtomics)))
                 : GetTextureFormat(size);
 
             if (compareAndSwap)
@@ -312,7 +318,7 @@ namespace Ryujinx.Graphics.Shader.Instructions
                 type,
                 format,
                 flags,
-                TextureOperation.DefaultCbufSlot,
+                cbufSlot,
                 imm);
 
             Operand res = context.ImageAtomic(type, format, flags, setAndBinding, sources);
@@ -501,7 +507,8 @@ namespace Ryujinx.Graphics.Shader.Instructions
             int srcB,
             int srcC,
             bool byteAddress,
-            bool isBindless)
+            bool isBindless,
+            int cbufSlot = TextureOperation.DefaultCbufSlot)
         {
             // Preserve source width before descriptor-sized formats are resolved.
             // Other backends retain their existing surface-instruction handling.
@@ -578,7 +585,7 @@ namespace Ryujinx.Graphics.Shader.Instructions
 
             // TODO: FP and 64-bit formats.
             TextureFormat format = size is SuatomSize.Sd32 or SuatomSize.Sd64
-                ? (isBindless ? TextureFormat.Unknown : ShaderProperties.GetTextureFormatAtomic(context.TranslatorContext.GpuAccessor, imm, strict: metalAtomics))
+                ? (isBindless ? TextureFormat.Unknown : (cbufSlot != TextureOperation.DefaultCbufSlot ? UniformHandleAtomicFormat(size) : ShaderProperties.GetTextureFormatAtomic(context.TranslatorContext.GpuAccessor, imm, strict: metalAtomics)))
                 : GetTextureFormat(size);
 
             sourcesList.Add(Rb());
@@ -602,7 +609,7 @@ namespace Ryujinx.Graphics.Shader.Instructions
                 type,
                 format,
                 flags,
-                TextureOperation.DefaultCbufSlot,
+                cbufSlot,
                 imm);
 
             context.ImageAtomic(type, format, flags, setAndBinding, sources);
