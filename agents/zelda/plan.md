@@ -4,7 +4,7 @@ Goal (the user, 2026-11-04 21:45): the first stretch of the game playable on the
 
 ## Handoff (2026-11-05 04:17)
 
-For agents taking this up without the session that wrote it. Read this section, then the row `slots` in Boots and the Open list.
+For agents taking this up without the session that wrote it. Read this section, then the row `slots` in Boots and the Open list. Autonomous agents working overnight on the MacBook Pro follow [night_prompt.md](night_prompt.md).
 
 - Code: branch `zelda` on `origin` (joaoalvess/horizon-nx2, a public repository), from `refactor` `6e224308` plus `upstream-chain` (`f048be7c`). Everything of this work is committed there; nothing is left only on the Air.
 - Data: the game, the build folder and the work folder are on the APFS-encrypted SSD `Hangar` (`/Volumes/Hangar/Games/ZeldaOcarinaOfTime_v131072/`, Paths above). They never go into git or anywhere public: game files, keys, extracted shaders, MSL, metallibs, SPIR-V, logs and screenshots of the game. The scratch scripts and harnesses named in this file (`xlate_fix/*.sh`, `explore/*/`) live there too, not in the repository.
