@@ -1,5 +1,6 @@
 using Ryujinx.Graphics.Shader.Decoders;
 using Ryujinx.Graphics.Shader.IntermediateRepresentation;
+using Ryujinx.Graphics.Shader.StructuredIr;
 using Ryujinx.Graphics.Shader.Translation;
 using System.Numerics;
 using static Ryujinx.Graphics.Shader.Instructions.InstEmitHelper;
@@ -217,6 +218,10 @@ namespace Ryujinx.Graphics.Shader.Instructions
                     {
                         res = context.AtomicAdd(storageKind, e0, e1, value);
                     }
+                    else if (type == AtomSize.F32FtzRn && storageKind == StorageKind.GlobalMemory)
+                    {
+                        res = EmitGlobalAtomicAddF32FtzRn(context, e0, e1, value);
+                    }
                     else
                     {
                         context.TranslatorContext.GpuAccessor.Log($"Invalid reduction type: {type}.");
@@ -303,6 +308,54 @@ namespace Ryujinx.Graphics.Shader.Instructions
             }
 
             return res;
+        }
+
+        private static Operand EmitGlobalAtomicAddF32FtzRn(EmitterContext context, Operand addrLow, Operand addrHigh, Operand value)
+        {
+            // Global RED/ATOMG.ADD.F32 flush both inputs and the result to signed zero
+            // (PTX atom.add.f32). AtomicAdd emits integer addition, so use the uint CAS
+            // path instead. Keeping global-memory IR also retains address resolution and write tracking.
+            // Locals are SSA values at this point. A private scalar carries the observed
+            // bits across the back edge without borrowing guest/deferred-write registers.
+            var properties = context.ResourceManager.Properties;
+            int observedId = properties.AddLocalMemory(new MemoryDefinition($"atomic_f32_observed_{properties.LocalMemories.Count}", AggregateType.U32));
+            context.Store(StorageKind.LocalMemory, observedId, Const(0));
+            Operand done = Label();
+
+            if (context.TranslatorContext.Definitions.Stage == ShaderStage.Fragment)
+            {
+                // A helper's CAS need not perform a store. Exclude it before the initial
+                // atomic read as well, so it cannot spin on a suppressed exchange.
+                context.BranchIfTrue(done, context.Load(StorageKind.Input, IoVariable.ThreadKill));
+            }
+
+            Operand addend = FlushAtomicF32ToSignedZero(context, value);
+            context.Store(StorageKind.LocalMemory, observedId, context.AtomicCompareAndSwap(StorageKind.GlobalMemory, addrLow, addrHigh, Const(0), Const(0)));
+            Operand retry = Label();
+            context.MarkLabel(retry);
+
+            Operand expected = context.Load(StorageKind.LocalMemory, observedId);
+            Operand sum = Local();
+            context.Add(new Operation(Instruction.FP32 | Instruction.Add, sum, FlushAtomicF32ToSignedZero(context, expected), addend)
+            {
+                ForcePrecise = true,
+            });
+            Operand desired = FlushAtomicF32ToSignedZero(context, sum);
+            Operand observed = context.AtomicCompareAndSwap(StorageKind.GlobalMemory, addrLow, addrHigh, expected, desired);
+            context.Store(StorageKind.LocalMemory, observedId, observed);
+
+            // Compare bits, never floats: a NaN old value must still terminate on success.
+            context.BranchIfTrue(retry, context.ICompareNotEqual(observed, expected));
+            context.MarkLabel(done);
+
+            return context.Load(StorageKind.LocalMemory, observedId);
+        }
+
+        private static Operand FlushAtomicF32ToSignedZero(EmitterContext context, Operand bits)
+        {
+            Operand exponentIsZero = context.ICompareEqual(context.BitwiseAnd(bits, Const(0x7f800000)), Const(0));
+            Operand sign = context.BitwiseAnd(bits, Const(unchecked((int)0x80000000)));
+            return context.ConditionalSelect(exponentIsZero, sign, bits);
         }
 
         private static void EmitLoad(
