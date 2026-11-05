@@ -52,28 +52,45 @@ def precise(msl): return re.sub(r'\bfast::(min|max|clamp)\(', r'precise::\1(', m
 # Ampere HMMA.16816 with an f16 accumulator (agl's upscaler networks) reaches the MSL as a call of dmsh_hmma16816_f16(lane, block, A0..A3, B0, B1, C0, C1, out D1) → D0, with
 # the subgroup's 256-word block of the scratch shared memory as the last argument (InstEmitAmpereTensor.AHmma, TensorPass, HelperFunctionManager.GenerateHmma16816F16). The
 # translator's body computes D lane by lane from the block; here it becomes simdgroup_matrix code over the same block: A row-major (halves 0..255, 16 a row), B transposed
-# (256..383, row n, 16 halves of k, loaded transposed), C / D row-major (384..511, 8 a row). Per HMMA on an M4 Pro: 1.08 ns a SIMD-group against 5.4 for the shuffle emulation
-HMMA_BODY = '''{
-    threadgroup uint* s = &%(scr)s[uint(%(blk)s)];
-    uint g = uint(%(lane)s) >> 2, t = uint(%(lane)s) & 3;
-    s[g * 8 + t] = uint(%(a0)s); s[(g + 8) * 8 + t] = uint(%(a1)s); s[g * 8 + 4 + t] = uint(%(a2)s); s[(g + 8) * 8 + 4 + t] = uint(%(a3)s);
-    s[128 + g * 8 + t] = uint(%(b0)s); s[128 + g * 8 + 4 + t] = uint(%(b1)s);
-    s[192 + g * 4 + t] = uint(%(acc0)s); s[192 + (g + 8) * 4 + t] = uint(%(acc1)s);
-    simdgroup_barrier(mem_flags::mem_threadgroup);
-    threadgroup half* h = (threadgroup half*)s;
-    simdgroup_half8x8 a00, a01, a10, a11, b0, b1, c0, c1;
-    simdgroup_load(a00, h, 16, ulong2(0, 0)); simdgroup_load(a01, h, 16, ulong2(8, 0)); simdgroup_load(a10, h, 16, ulong2(0, 8)); simdgroup_load(a11, h, 16, ulong2(8, 8));
-    simdgroup_load(b0, h + 256, 16, ulong2(0, 0), true); simdgroup_load(b1, h + 256, 16, ulong2(8, 0), true);
-    simdgroup_load(c0, h + 384, 8, ulong2(0, 0)); simdgroup_load(c1, h + 384, 8, ulong2(0, 8));
-    simdgroup_multiply_accumulate(c0, a00, b0, c0); simdgroup_multiply_accumulate(c0, a01, b1, c0);
-    simdgroup_multiply_accumulate(c1, a10, b0, c1); simdgroup_multiply_accumulate(c1, a11, b1, c1);
-    simdgroup_store(c0, h + 384, 8, ulong2(0, 0)); simdgroup_store(c1, h + 384, 8, ulong2(0, 8));
-    simdgroup_barrier(mem_flags::mem_threadgroup);
-    uint d0 = s[192 + g * 4 + t], d1 = s[192 + (g + 8) * 4 + t];
-    simdgroup_barrier(mem_flags::mem_threadgroup);
-    %(d1)s = as_type<%(dt)s>(d1);
-    return as_type<%(rt)s>(d0);
-}'''
+# (256..383, row n, 16 halves of k, loaded transposed), C / D row-major (384..511, 8 a row). Per HMMA on an M4 Pro: 1.08 ns a SIMD-group against 5.4 for the shuffle emulation.
+# A variant dmsh_hmma16816_f16_<layouts> (TensorPass.ChooseLayouts) takes and gives the words whose bit is set (A0..A3, B0, B1, C0, C1, D0, D1) as the lane's elements of the
+# simdgroup_matrix, without the block
+def hmma_body(layouts):
+    apple = [layouts >> i & 1 for i in range(10)]
+    words = ['a0', 'a1', 'a2', 'a3', 'b0', 'b1', 'acc0', 'acc1']
+    mats = ['a00', 'a10', 'a01', 'a11', 'b0', 'b1', 'c0', 'c1']
+    slots = ['g * 8 + t', '(g + 8) * 8 + t', 'g * 8 + 4 + t', '(g + 8) * 8 + 4 + t', '128 + g * 8 + t', '128 + g * 8 + 4 + t', '192 + g * 4 + t', '192 + (g + 8) * 4 + t']
+    loads = ['h, 16, ulong2(0, 0)', 'h, 16, ulong2(0, 8)', 'h, 16, ulong2(8, 0)', 'h, 16, ulong2(8, 8)', 'h + 256, 16, ulong2(0, 0), true', 'h + 256, 16, ulong2(8, 0), true',
+             'h + 384, 8, ulong2(0, 0)', 'h + 384, 8, ulong2(0, 8)']
+    stored = [i for i in range(8) if not apple[i]]
+    read = [q for q in range(2) if not apple[8 + q]]
+    block = bool(stored or read)
+    o = ['{']
+    if block:
+        o += ['    threadgroup uint* s = &%(scr)s[uint(%(blk)s)];', '    uint g = uint(%(lane)s) >> 2, t = uint(%(lane)s) & 3;']
+    for group in ([0, 1, 2, 3], [4, 5], [6, 7]):
+        if any(i in stored for i in group):
+            o.append('    ' + ' '.join(f's[{slots[i]}] = uint(%({words[i]})s);' for i in group if i in stored))
+    if stored:
+        o.append('    simdgroup_barrier(mem_flags::mem_threadgroup);')
+    if block:
+        o.append('    threadgroup half* h = (threadgroup half*)s;')
+    o.append('    simdgroup_half8x8 a00, a01, a10, a11, b0, b1, c0, c1;')
+    for i in range(8):
+        if apple[i]:
+            o.append(f'    {{ half2 v = as_type<half2>(uint(%({words[i]})s)); {mats[i]}.thread_elements()[0] = v.x; {mats[i]}.thread_elements()[1] = v.y; }}')
+        else:
+            o.append(f'    simdgroup_load({mats[i]}, {loads[i]});')
+    o += ['    simdgroup_multiply_accumulate(c0, a00, b0, c0); simdgroup_multiply_accumulate(c0, a01, b1, c0);',
+          '    simdgroup_multiply_accumulate(c1, a10, b0, c1); simdgroup_multiply_accumulate(c1, a11, b1, c1);']
+    if read:
+        o += ['    ' + ' '.join(f'simdgroup_store(c{q}, {loads[6 + q]});' for q in read), '    simdgroup_barrier(mem_flags::mem_threadgroup);']
+    d = [f'as_type<uint>(half2(c{q}.thread_elements()[0], c{q}.thread_elements()[1]))' if apple[8 + q] else f's[{slots[6 + q]}]' for q in range(2)]
+    o.append(f'    uint d0 = {d[0]}, d1 = {d[1]};')
+    if block:
+        o.append('    simdgroup_barrier(mem_flags::mem_threadgroup);')
+    o += ['    %(d1)s = as_type<%(dt)s>(d1);', '    return as_type<%(rt)s>(d0);', '}']
+    return '\n'.join(o)
 # A store only the very first invocation of a dispatch makes (a compute shader's preamble: `if (-local.x == workgroup.x << log2(local size)) buffer[k] = value`). Hoian_Proc in Splatoon Raiders resets its append counter
 # that way, with the other invocations adding to the counter at their end, hundreds of instructions later. On the Switch the first workgroup starts ahead of them. Apple's GPUs start workgroups in no order: a workgroup that had appended before
 # the reset lost its plants to the next one's, a different few each frame, and they flickered. So the store leaves the shader and the host makes it, in order, before the dispatch (the reflection's first_store, nvn_mtl.m). Only this exact
@@ -161,17 +178,17 @@ def tg_spill(msl):
         ln = re.sub(r'(?<!mem_device \| )mem_flags::mem_threadgroup\b', 'mem_flags::mem_device | mem_flags::mem_threadgroup', ln)
         lines[n] = ln
     return '\n'.join(lines), total
-def hmma_msl(msl):
-    m = re.search(r'\n(\w+) dmsh_hmma16816_f16\(([^)]*)\)\n\{', msl)
+def hmma_msl(msl, at=0):
+    m = re.compile(r'\n(\w+) dmsh_hmma16816_f16(?:_(\d+))?\(([^)]*)\)\n\{').search(msl, at)
     if not m: return msl
     params, depth, cur = [], 0, ''   # commas inside template arguments (spvUnsafeArray<uint, N>) do not separate parameters
-    for ch in m.group(2) + ',':
+    for ch in m.group(3) + ',':
         depth += {'<': 1, '>': -1}.get(ch, 0)
         if ch == ',' and depth == 0: params.append(cur.strip()); cur = ''
         else: cur += ch
     scr = [x for x in params if x.startswith('threadgroup ')]
     plain = [x for x in params if not x.startswith('threadgroup ')]
-    if len(scr) != 1 or len(plain) != 11: raise ValueError('dmsh_hmma16816_f16: unexpected parameters ' + m.group(2)[:200])
+    if len(scr) != 1 or len(plain) != 11: raise ValueError('dmsh_hmma16816_f16: unexpected parameters ' + m.group(3)[:200])
     def group1(pattern, text, how=re.search):   # the first group of a match the helper's signature must have
         found = how(pattern, text)
         if not found: raise ValueError('dmsh_hmma16816_f16: unexpected parameter ' + text[:100])
@@ -185,7 +202,8 @@ def hmma_msl(msl):
         depth += {'{': 1, '}': -1}.get(msl[i], 0)
         if depth == 0: break
     else: raise ValueError('dmsh_hmma16816_f16: body not closed')
-    return msl[:start] + HMMA_BODY % v + msl[i + 1:]
+    body = hmma_body(int(m.group(2) or 0)) % v
+    return hmma_msl(msl[:start] + body + msl[i + 1:], start + len(body))
 # Border colours: Maxwell's sampler takes any RGBA border colour, Metal's only transparent black, opaque black or opaque white, and the host's sampler gets the nearest of them
 # (nvn_border.h). A filtered sample is linear in the border colour, r = Σ w·texel + w_border·B, so two samples through samplers that differ only in their border colour give the rest:
 # with Metal colours Bn (the sampler) and Bw (its twin), r = s_n + (s_w - s_n)·k, k = (B - Bn) / (Bw - Bn) per channel. Each sampler member a shader samples gets a twin member

@@ -11,8 +11,7 @@ import unittest
 
 TOOLS = Path(__file__).resolve().parents[1] / 'tools'
 tree = ast.parse((TOOLS / 'dmsh_build.py').read_text())
-selected = [n for n in tree.body if (isinstance(n, ast.FunctionDef) and n.name == 'hmma_msl')
-            or (isinstance(n, ast.Assign) and any(getattr(t, 'id', None) == 'HMMA_BODY' for t in n.targets))]
+selected = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in ('hmma_msl', 'hmma_body')]
 scope = {'re': re}
 exec(compile(ast.Module(body=selected, type_ignores=[]), str(TOOLS / 'dmsh_build.py'), 'exec'), scope)
 hmma_msl = scope['hmma_msl']
@@ -74,7 +73,7 @@ int main(int argc, char **argv) {
         NSData *lib_data = [NSData dataWithContentsOfFile:@(argv[1])];
         id<MTLLibrary> lib = [dev newLibraryWithData:dispatch_data_create(lib_data.bytes, lib_data.length, nil, DISPATCH_DATA_DESTRUCTOR_DEFAULT) error:&e];
         if (!lib) { printf("library: %s\n", e.localizedDescription.UTF8String); return 1; }
-        id<MTLComputePipelineState> ps = [dev newComputePipelineStateWithFunction:[lib newFunctionWithName:@"check"] error:&e];
+        id<MTLComputePipelineState> ps = [dev newComputePipelineStateWithFunction:[lib newFunctionWithName:@(argc > 2 ? argv[2] : "check")] error:&e];
         if (!ps) { printf("pipeline: %s\n", e.localizedDescription.UTF8String); return 1; }
         const int groups = 64, tg = 128, n = groups * tg;
         id<MTLBuffer> in = [dev newBufferWithLength:n * 32 options:MTLResourceStorageModeShared], out = [dev newBufferWithLength:n * 8 options:MTLResourceStorageModeShared];
@@ -133,19 +132,80 @@ class HmmaRewrite(unittest.TestCase):
             hmma_msl(HEAD + HELPER.replace('thread const int& _42970, ', ''))
 
 
+LAYOUTS = [1023, 0x3c0, 0x03f, 0x300, 0x0c0, 0x030, 0x00f, 0x2a5, 0x15a, 0x0ff, 0x3fe]
+APPLE = '''
+static inline ushort apple_row(ushort l) { return ((l >> 4) << 2) | ((l >> 1) & 3); }
+static inline ushort apple_pair(ushort l) { return ((l >> 3) & 1) * 2 + (l & 1); }
+static inline uint rows_to_apple(uint w, ushort l) { return simd_shuffle(w, ushort(apple_row(l) * 4 + apple_pair(l))); }
+static inline uint columns_to_apple(uint w, ushort l)
+{
+    ushort r = apple_row(l), n = apple_pair(l) * 2;
+    uint lo = simd_shuffle(w, ushort(n * 4 + r / 2)), hi = simd_shuffle(w, ushort((n + 1) * 4 + r / 2));
+    return extract_bits(lo, (r & 1) * 16, 16) | extract_bits(hi, (r & 1) * 16, 16) << 16;
+}
+static inline uint rows_to_nvidia(uint w, ushort l) { ushort g = l >> 2, t = l & 3; return simd_shuffle(w, ushort(((g >> 2) << 4) | ((t >> 1) << 3) | ((g & 3) << 1) | (t & 1))); }
+'''
+
+
+def variant_kernel(layouts):
+    take = ''.join(f'    w[{i}] = {"columns" if i in (4, 5) else "rows"}_to_apple(w[{i}], ul);\n' for i in range(8) if layouts >> i & 1)
+    give = ''.join(f'    o[{q}] = rows_to_nvidia(o[{q}], ul);\n' for q in range(2) if layouts >> (8 + q) & 1)
+    return f'''
+kernel void check_{layouts}(device const uint *in [[buffer(0)]], device uint *out [[buffer(1)]], uint lane [[thread_index_in_simdgroup]], uint sg [[simdgroup_index_in_threadgroup]],
+                  uint gid [[thread_position_in_grid]])
+{{
+    threadgroup spvUnsafeArray<uint, 1024> scr;
+    int l = int(lane), blk = int(sg * 256);
+    ushort ul = ushort(lane);
+    uint w[8];
+    for (int i = 0; i < 8; i++) w[i] = in[gid * 8 + i];
+{take}    int d1;
+    int d0 = dmsh_hmma16816_f16_{layouts}(l, blk, int(w[0]), int(w[1]), int(w[2]), int(w[3]), int(w[4]), int(w[5]), int(w[6]), int(w[7]), d1, scr);
+    uint o[2] = {{uint(d0), uint(d1)}};
+{give}    out[gid * 2] = o[0]; out[gid * 2 + 1] = o[1];
+}}
+'''
+
+
+class HmmaVariants(unittest.TestCase):
+    def test_words_in_apples_layout_skip_the_block(self):
+        out = hmma_msl(HEAD + HELPER.replace('dmsh_hmma16816_f16(', 'dmsh_hmma16816_f16_1023(') + HELPER + KERNEL)
+        whole = out[out.index('{', out.index('int dmsh_hmma16816_f16_1023(')):out.index('int dmsh_hmma16816_f16(')]
+        self.assertNotIn('_34', whole)
+        self.assertNotIn('simdgroup_barrier', whole)
+        self.assertIn('a00.thread_elements()[0] = v.x;', whole)
+        self.assertIn('uint d0 = as_type<uint>(half2(c0.thread_elements()[0], c0.thread_elements()[1]))', whole)
+        self.assertIn('s[g * 8 + t] = uint(_42963)', out[out.index('int dmsh_hmma16816_f16('):])
+
+    def test_only_the_words_in_nvidias_layout_use_the_block(self):
+        out = hmma_msl(HEAD + HELPER.replace('dmsh_hmma16816_f16(', 'dmsh_hmma16816_f16_704('))
+        self.assertIn('s[g * 8 + t] = uint(_42963)', out)
+        self.assertNotIn('uint(_42969)', out.replace('as_type<half2>(uint(_42969))', ''))
+        self.assertIn('simdgroup_store(c0, h + 384, 8, ulong2(0, 0));', out)
+        self.assertNotIn('simdgroup_store(c1', out)
+
+
 @unittest.skipUnless(shutil.which('xcrun') and shutil.which('clang'), 'needs Xcode')
 class HmmaOnGpu(unittest.TestCase):
-    def test_matches_reference(self):
+    def run_kernels(self, src, names):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
-            (d / 'h.metal').write_text(hmma_msl(HEAD + HELPER + KERNEL))
+            (d / 'h.metal').write_text(src)
             subprocess.run(['xcrun', '-sdk', 'macosx', 'metal', '-c', '-O1', '-fpreserve-invariance', str(d / 'h.metal'), '-o', str(d / 'h.air')], check=True)
             subprocess.run(['xcrun', '-sdk', 'macosx', 'metallib', str(d / 'h.air'), '-o', str(d / 'h.metallib')], check=True)
             (d / 'run.m').write_text(RUNNER)
             subprocess.run(['clang', '-fobjc-arc', '-O1', str(d / 'run.m'), '-framework', 'Metal', '-framework', 'Foundation', '-o', str(d / 'run')], check=True)
-            r = subprocess.run([str(d / 'run'), str(d / 'h.metallib')], capture_output=True, text=True)
-            if r.returncode == 2: self.skipTest(r.stdout.strip())
-            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            for name in names:
+                r = subprocess.run([str(d / 'run'), str(d / 'h.metallib'), name], capture_output=True, text=True)
+                if r.returncode == 2: self.skipTest(r.stdout.strip())
+                self.assertEqual(r.returncode, 0, name + ': ' + r.stdout + r.stderr)
+
+    def test_matches_reference(self):
+        self.run_kernels(hmma_msl(HEAD + HELPER + KERNEL), ['check'])
+
+    def test_variants_match_reference(self):   # inputs moved into Apple's layout and D moved back by the kernel, with the lane mapping of TensorPass.AppleRow / ApplePair
+        helpers = ''.join(HELPER.replace('dmsh_hmma16816_f16(', f'dmsh_hmma16816_f16_{n}(') for n in LAYOUTS)
+        self.run_kernels(hmma_msl(HEAD + APPLE + helpers + ''.join(variant_kernel(n) for n in LAYOUTS)), [f'check_{n}' for n in LAYOUTS])
 
 
 if __name__ == '__main__':

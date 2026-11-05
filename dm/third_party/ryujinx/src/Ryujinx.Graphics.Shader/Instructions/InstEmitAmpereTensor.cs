@@ -1,6 +1,7 @@
 using Ryujinx.Graphics.Shader.Decoders;
 using Ryujinx.Graphics.Shader.IntermediateRepresentation;
 using Ryujinx.Graphics.Shader.Translation;
+using System;
 using static Ryujinx.Graphics.Shader.Instructions.InstEmitAluHelper;
 using static Ryujinx.Graphics.Shader.Instructions.InstEmitHelper;
 using static Ryujinx.Graphics.Shader.IntermediateRepresentation.OperandHelper;
@@ -302,48 +303,33 @@ namespace Ryujinx.Graphics.Shader.Instructions
 
             Operand addr = context.IAdd(ALocalAddress(context, x, 32, stride: false), Const((int)x.SignedField(40, 64)));
             Operand lane = ALaneId(context);
-            Operand g = context.ShiftRightU32(lane, Const(2));
-            Operand t = context.BitwiseAnd(lane, Const(3));
             int id = context.ResourceManager.SharedMemoryId;
+            ShaderDefinitions defs = context.TranslatorContext.Definitions;
+            int scratch = defs.Stage == ShaderStage.Compute ? context.ResourceManager.TryGetHmmaScratchMemoryId(ASubgroups(defs)) : -1;
             Operand[] results = new Operand[count];
-            Operand[] rows = new Operand[mode == 0 ? count : 2 * count];
 
-            for (int m = 0; m < count; m++)
+            if (scratch >= 0)
             {
-                if (mode == 0)
+                Operand block = ASubgroupBlock(context);
+
+                context.Store(StorageKind.SharedMemory, scratch, context.IAdd(block, lane), addr);
+                context.SubgroupBarrier();
+
+                for (int m = 0; m < count; m++)
                 {
-                    rows[m] = context.IAdd(g, Const(8 * m));
+                    results[m] = context.Add(Instruction.MatrixLoad, Local(), Const(id), Const(scratch), Const(mode), Const(m), lane, block);
                 }
-                else
-                {
-                    for (int j = 0; j < 2; j++)
-                    {
-                        rows[2 * m + j] = context.IAdd(context.IAdd(context.ShiftLeft(t, Const(1)), Const(j)), Const(8 * m));
-                    }
-                }
+
+                context.SubgroupBarrier();
             }
-
-            Operand[] rowAddrs = AExchange(context, addr, rows);
-
-            for (int m = 0; m < count; m++)
+            else
             {
-                if (mode == 0)
-                {
-                    Operand byteOffset = context.IAdd(rowAddrs[m], context.ShiftLeft(t, Const(2)));
-                    results[m] = context.Load(StorageKind.SharedMemory, id, context.ShiftRightU32(byteOffset, Const(2)));
-                }
-                else
-                {
-                    Operand[] h = new Operand[2];
+                Operand g = context.ShiftRightU32(lane, Const(2));
+                Operand t = context.BitwiseAnd(lane, Const(3));
 
-                    for (int j = 0; j < 2; j++)
-                    {
-                        Operand byteOffset = context.IAdd(rowAddrs[2 * m + j], context.ShiftLeft(g, Const(1)));
-                        Operand word = context.Load(StorageKind.SharedMemory, id, context.ShiftRightU32(byteOffset, Const(2)));
-                        h[j] = context.BitfieldExtractU32(word, context.ShiftLeft(context.BitwiseAnd(byteOffset, Const(2)), Const(3)), Const(16));
-                    }
-
-                    results[m] = context.BitwiseOr(h[0], context.ShiftLeft(h[1], Const(16)));
+                for (int m = 0; m < count; m++)
+                {
+                    results[m] = ALdsmMatrix(context, id, m, mode == 1, g, t, row => context.Shuffle(addr, row));
                 }
             }
 
@@ -351,6 +337,28 @@ namespace Ryujinx.Graphics.Shader.Instructions
             {
                 context.Copy(Register(x.Rd + m, RegisterType.Gpr), results[m]);
             }
+        }
+
+        public static Operand ALdsmMatrix(EmitterContext context, int id, int m, bool columns, Operand major, Operand minor, Func<Operand, Operand> rowAddress)
+        {
+            if (!columns)
+            {
+                Operand byteOffset = context.IAdd(rowAddress(context.IAdd(major, Const(8 * m))), context.ShiftLeft(minor, Const(2)));
+
+                return context.Load(StorageKind.SharedMemory, id, context.ShiftRightU32(byteOffset, Const(2)));
+            }
+
+            Operand[] h = new Operand[2];
+
+            for (int j = 0; j < 2; j++)
+            {
+                Operand row = context.IAdd(context.IAdd(context.ShiftLeft(minor, Const(1)), Const(j)), Const(8 * m));
+                Operand byteOffset = context.IAdd(rowAddress(row), context.ShiftLeft(major, Const(1)));
+                Operand word = context.Load(StorageKind.SharedMemory, id, context.ShiftRightU32(byteOffset, Const(2)));
+                h[j] = context.BitfieldExtractU32(word, context.ShiftLeft(context.BitwiseAnd(byteOffset, Const(2)), Const(3)), Const(16));
+            }
+
+            return context.BitwiseOr(h[0], context.ShiftLeft(h[1], Const(16)));
         }
 
         // MOVM.16.MT88 Rd, Ra: the 8 x 8 matrix of halves the warp holds (lane L: row L / 4, columns 2 (L % 4), + 1), transposed into the same layout

@@ -1,4 +1,5 @@
 using Ryujinx.Graphics.Shader.IntermediateRepresentation;
+using Ryujinx.Graphics.Shader.Translation.Transforms;
 using System;
 using System.Collections.Generic;
 using static Ryujinx.Graphics.Shader.IntermediateRepresentation.OperandHelper;
@@ -206,30 +207,40 @@ namespace Ryujinx.Graphics.Shader.Translation
         // t = L % 4; A word r: row g + 8 (r & 1), k 2t + 8 (r >> 1) and + 1; B word r: k 2t + 8 r and + 1 of column g; C / D word r: row g + 8 r, columns 2t, 2t + 1.
         // The block holds A row-major (words 0..127, 8 a row), B transposed (128..191: row n, 8 words of k) and C / D row-major (192..255, 4 a row), so every lane stores its
         // packed words as they are. This body computes D from the block lane by lane; the shader build replaces it in the Metal source (dmsh_build.py, HMMA_MSL) with
-        // simdgroup_matrix loads, multiply-accumulates and a store into the same block, which needs no other change: the name, the arguments and the block are the contract
+        // simdgroup_matrix loads, multiply-accumulates and a store into the same block, which needs no other change: the name, the arguments and the block are the contract.
+        // The words whose bit is set in id >> 6 (A0..A3, B0, B1, C0, C1, D0, D1: TensorPass.ChooseLayouts) are in the layout of Apple's simdgroup_matrix instead, converted by shuffles here
         private static Function GenerateHmma16816F16(int id)
         {
+            int layouts = id >> 6;
+            id &= 63;
+
             EmitterContext context = new();
 
             Operand lane = Argument(0);
             Operand bse = Argument(1);
             Operand g = context.ShiftRightU32(lane, Const(2));
             Operand t = context.BitwiseAnd(lane, Const(3));
+            Operand[] w = new Operand[8];
+
+            for (int i = 0; i < 8; i++)
+            {
+                w[i] = (layouts & (1 << i)) == 0 ? Argument(2 + i) : (i is 4 or 5) ? AppleColumnsToNvidia(context, Argument(2 + i), g, t) : context.Shuffle(Argument(2 + i), TensorPass.AppleLane(context, g, t));
+            }
 
             Operand At(Operand row, int word) => context.IAdd(bse, context.IAdd(context.ShiftLeft(row, Const(3)), context.IAdd(t, Const(word))));
             Operand g8 = context.IAdd(g, Const(8));
 
-            context.Store(StorageKind.SharedMemory, id, At(g, 0), Argument(2));
-            context.Store(StorageKind.SharedMemory, id, At(g8, 0), Argument(3));
-            context.Store(StorageKind.SharedMemory, id, At(g, 4), Argument(4));
-            context.Store(StorageKind.SharedMemory, id, At(g8, 4), Argument(5));
-            context.Store(StorageKind.SharedMemory, id, context.IAdd(Const(128), At(g, 0)), Argument(6));
-            context.Store(StorageKind.SharedMemory, id, context.IAdd(Const(128), At(g, 4)), Argument(7));
+            context.Store(StorageKind.SharedMemory, id, At(g, 0), w[0]);
+            context.Store(StorageKind.SharedMemory, id, At(g8, 0), w[1]);
+            context.Store(StorageKind.SharedMemory, id, At(g, 4), w[2]);
+            context.Store(StorageKind.SharedMemory, id, At(g8, 4), w[3]);
+            context.Store(StorageKind.SharedMemory, id, context.IAdd(Const(128), At(g, 0)), w[4]);
+            context.Store(StorageKind.SharedMemory, id, context.IAdd(Const(128), At(g, 4)), w[5]);
 
             Operand Ct(Operand row) => context.IAdd(bse, context.IAdd(Const(192), context.IAdd(context.ShiftLeft(row, Const(2)), t)));
 
-            context.Store(StorageKind.SharedMemory, id, Ct(g), Argument(8));
-            context.Store(StorageKind.SharedMemory, id, Ct(g8), Argument(9));
+            context.Store(StorageKind.SharedMemory, id, Ct(g), w[6]);
+            context.Store(StorageKind.SharedMemory, id, Ct(g8), w[7]);
 
             context.SubgroupBarrier();
 
@@ -238,7 +249,7 @@ namespace Ryujinx.Graphics.Shader.Translation
             for (int q = 0; q < 2; q++)
             {
                 Operand row = q == 0 ? g : g8;
-                Operand cw = Argument(8 + q);
+                Operand cw = w[6 + q];
                 Operand[] acc = [context.UnpackHalf2x16Low(cw), context.UnpackHalf2x16High(cw)];
                 Operand rowBase = context.IAdd(bse, context.ShiftLeft(row, Const(3)));
 
@@ -262,11 +273,32 @@ namespace Ryujinx.Graphics.Shader.Translation
             // The next HMMA of this subgroup overwrites the block: every lane has read it by then
             context.SubgroupBarrier();
 
+            for (int q = 0; q < 2; q++)
+            {
+                if ((layouts & (1 << (8 + q))) != 0)
+                {
+                    d[q] = context.Shuffle(d[q], context.IAdd(context.ShiftLeft(TensorPass.AppleRow(context, lane), Const(2)), TensorPass.ApplePair(context, lane)));
+                }
+            }
+
             context.Copy(Argument(10), d[1]);
 
             context.Return(d[0]);
 
-            return new Function(ControlFlowGraph.Create(context.GetOperations()).Blocks, "dmsh_hmma16816_f16", true, 10, 1);
+            return new Function(ControlFlowGraph.Create(context.GetOperations()).Blocks, layouts == 0 ? "dmsh_hmma16816_f16" : $"dmsh_hmma16816_f16_{layouts}", true, 10, 1);
+        }
+
+        private static Operand AppleColumnsToNvidia(EmitterContext context, Operand word, Operand g, Operand t)
+        {
+            Operand[] h = new Operand[2];
+
+            for (int j = 0; j < 2; j++)
+            {
+                Operand value = context.Shuffle(word, TensorPass.AppleLane(context, context.IAdd(context.ShiftLeft(t, Const(1)), Const(j)), context.ShiftRightU32(g, Const(1))));
+                h[j] = context.BitfieldExtractU32(value, context.ShiftLeft(context.BitwiseAnd(g, Const(1)), Const(4)), Const(16));
+            }
+
+            return context.BitwiseOr(h[0], context.ShiftLeft(h[1], Const(16)));
         }
 
         private static Function GenerateSharedStore8(int id)
