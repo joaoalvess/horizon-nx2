@@ -174,6 +174,7 @@ HLE_FORCE("_ZN2nn4pctl28IsFreeCommunicationAvailableEv", "parental controls · w
 // The Legend of Zelda: Breath of the Wild: checks the parental-control permission for stereoscopic 3D before turning on the options' Labo VR mode (returns bool; the argument = whether to
 // show UI, the game passes 0). The host has no VR display (pl::BeginVrMode refuses, hle_sdk16.c): not permitted, so the game clears its VR flag and stays 2D (as MacNativeGames found on 1.6.0 and 1.9.0)
 HLE_FORCE("_ZN2nn4pctl27CheckStereoVisionPermissionEb", "parental controls · stereoscopic 3D permission; the host has no VR display, not permitted", unsigned, h_pctl_Stereo, unsigned show_ui) { (void)show_ui; return 0; }
+HLE_FORCE("_ZN2nn4pctl33CheckAgcPermissionUnderMinimumAgeERKNS_7account3UidE", "parental controls · AGC permission for a user under the minimum age; 1, network service account unavailable (account::EnsureNetworkServiceAccountAvailable fails)", unsigned, h_pctl_Agc, const void *uid) { (void)uid; return 1; }
 
 // swkbd software keyboard: see hle_swkbd.c
 

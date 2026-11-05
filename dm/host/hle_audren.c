@@ -549,6 +549,7 @@ HLE_FORCE("_ZN2nn5audio38AcquireAudioDeviceNotificationForInputEPNS_2os11SystemE
     if (atomic_exchange(&g_ad_notify_in, 1)) return 0x499;
     hle_bind_system_event(ev, 0); return RES_OK;
 }
+HLE_FORCE("_ZN2nn5audio23ListVirtualInputDevicesEPNS0_15AudioDeviceNameEi", "virtual input device list (Switch 2, the audio device manager auddmg:u, which the host does not serve): none, the host has no microphone", int, h_ad_ListVirtIn, char *names, int n) { (void)names; (void)n; return 0; }
 // SDK 7 names of the two above (Super Mario Odyssey): the device-switch event and the active channel count
 HLE_FORCE("_ZN2nn5audio36AcquireAudioDeviceSwitchNotificationEPNS_2os11SystemEventE", "output device switch notification (SDK 7 name): bound, never signaled", void, h_ad_Notify7, void *ev) { hle_bind_system_event(ev, 0); }
 HLE_FORCE("_ZN2nn5audio21GetActiveChannelCountEv", "output channel count (SDK 7 name): 2", int, h_ad_Channels7, void) { return 2; }
