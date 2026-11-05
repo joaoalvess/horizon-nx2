@@ -14,5 +14,9 @@ Three projects from Ryujinx 1.3.2: `Ryujinx.Graphics.Shader`, `Ryujinx.Common` a
 
 - `Ryujinx.Graphics.Shader/Instructions/InstEmitSurface.cs`, `IntermediateRepresentation/TextureFlags.cs` and `CodeGen/Spirv/Instructions.cs`: the Metal path (`TranslationFlags.MetalImageAtomics`) bounds image atomics before forming the texel pointer, which SPIRV-Cross writes as a native texture atomic (MSL 3.1) on buffer, 2D, 2D-array and 3D images. Returning `IGN` atomics preserve the old texel on the valid edge and return zero outside the image; CAS is a native texture compare-exchange behind the same guard; predicate results and non-IGN modes remain rejected. See [bounds of image atomics](../../../docs/reference/shaders.md#bounds-of-image-atomics) and [image atomics](../../../docs/reference/shaders.md#image-atomics), found on SHIN MEGAMI TENSEI V: Vengeance's particle counters.
 
+- `Ryujinx.Graphics.Shader/Translation/Optimizations/GlobalToStorage.cs`, with `Translation/ResourceManager.cs` (`GetGmemLogLastMemoryId`) and `Translation/TranslatorContext.cs`: a raw global store or atomic sets the bit of the pool table entry it went through in the write log, once a thread for each new entry (`gmem_log_last`), instead of a hash set of guest pages that ran out of slots.
+
+- `Ryujinx.Graphics.Shader/Translation/Transforms/TensorPass.cs`, with `Instructions/InstEmitAmpereTensor.cs` (`ALdsm`, `ALdsmMatrix`), `IntermediateRepresentation/Instruction.cs` (`MatrixLoad`) and `Translation/HelperFunctionManager.cs` (`GenerateHmma16816F16`): HMMA fragments that only move between LDSM and HMMAs stay in the layout of Apple's `simdgroup_matrix`, and each HMMA calls the helper variant for the layouts of its words.
+
 The shader translation tool in `dm/gfx/tools/dmsh_xlate` references them to translate the original Switch shaders to SPIR-V.
 License: MIT, see `LICENSE.txt`. Upstream: <https://github.com/Ryubing>.
