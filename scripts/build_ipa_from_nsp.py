@@ -1883,22 +1883,20 @@ def shader_keys(g):   # the base shaders dmsh_build.py builds, shared by progres
     return keys
 
 
-SHADER_MISSING = re.compile(r'\[RED\] (?:shader ([0-9a-f]{16}) \([^)]*\) failed to load:|failed to load shader ([0-9a-f]{16})_b:)')   # what the host logs for a shader its library lacks (nvn_mtl.m)
+SHADER_MISSING = re.compile(r'\[RED\] (?:shader ([0-9a-f]{16}) \([^)]*\) failed to load:|failed to load shader ([0-9a-f]{16})_b:)')
 
 
-def seen_listed(g):   # the keys of the profile's shader_seen.tsv
+def seen_listed(g):
     return set(re.findall(r'^[0-9a-f]{16}\b', g.table('shader_seen.tsv').read_text(errors='replace'), re.M))
 
 
-def seen_logs(work, app):   # the logs a --seen-shaders build reads: the run command's, the app's and the one before it (only opening the app and quitting in its settings window starts a new log)
+def seen_logs(work, app):
     logs = Path(os.path.expanduser('~/Library/Logs/nxnative'))
     return work / 'run/host.log', logs / f'{app:016X}.log', logs / f'{app:016X}.prev.log'
 
 
 def seen_keys(g, sh, logs):
-    """The keys of a partial Mac library: the profile's shader_seen.tsv, those of the last partial build (sh/partial-keys.txt) and those the logs report missing. The file keeps what earlier runs added, as a
-    shader that loads no longer shows in the next log. Only keys of the shader map go in: a list or a log of another game version may name others, and the builder knows only the map's. No key at all stops
-    the build, as the builder takes no keys for the whole map. Returns the keys, sorted"""
+    """The keys of a partial Mac library: the profile's list, those of the last partial build and those the logs report missing, within the shader map"""
     listed, known, done = seen_listed(g), shader_keys(g), sh / 'partial-keys.txt'
     try: earlier = set(done.read_text().split())
     except OSError: earlier = set()
@@ -1920,7 +1918,7 @@ class ShaderWatch:
     the cache check (a hit restores <key>_b.json into the library directory b-<chain>/: the iOS one, or the Mac's for a Mac-only build; a miss writes <key>.bin into its temporary folder dmsh_* under WORK),
     the translation of the misses (<key>.spv in the temporary folder), and the compile, which takes the keys in a fixed order (sorted, the vertex shaders with pixel pairs last)
     and writes <key>_b.json again for every miss and every pixel shader: the furthest key written so far tells how far it got"""
-    def __init__(self, g, out, tmp, pso_pairs=None, seen=None):   # out: the library directory b-<chain>/ (the iOS one, or the Mac's for a Mac-only build); seen: the keys of a partial build
+    def __init__(self, g, out, tmp, pso_pairs=None, seen=None):   # out: the library directory b-<chain>/ (the iOS one, or the Mac's for a Mac-only build)
         keys = set(seen) if seen else shader_keys(g)
         pairs = set()
         for path in (g.table('shader_pairs.tsv'), pso_pairs):
@@ -2019,10 +2017,7 @@ def build_shaders(py, repo, sh, xlate, env, logs, g, pkg_key=None, mac=False, se
     sh/mac-b-<chain>.key (not in sh/cache, whose b-* entries dmsh_build.py reads as library folders). Each target writes only its own key (an iOS build that keeps a Mac build's libraries, both); either is taken only
     while the Mac sources and reflection carry a full build's stamp (inputs.tsv) for c1_full.tsv and cb_extent.tsv to name (chain_tables).
     Switching targets translates again (the per-shader keys include the iOS compile convention); the Metal compile cache (dmsh_mtlcache.py) reuses previously compiled MSL for that target.
-    After success the libraries of other chain versions are removed (prune_stale_chains).
-    seen (--seen-shaders, a Mac-only build): only those keys, into sh/partial/b-<chain>, emptied first, with its key inside; the full build's libraries, its key and the cache are left as they are, and the
-    per-shader cache (DMSH_CAS) is the full build's, so a later full build reuses this work. It gets no stamp and no c1_full.tsv or cb_extent.tsv, on purpose: beside a stamp the host would take the tables'
-    silence on a shader the partial build never saw as proof it is safe (no chain_tables, no shader_regressions, no pruning; the host logs the missing stamp in red at each start)"""
+    After success the libraries of other chain versions are removed (prune_stale_chains)"""
     ios, log = sh / 'ios', logs / 'dmsh_build.log'
     PROG.stage('Mac shaders' if mac else 'iOS shaders')
     chain = chain_of(repo)
@@ -2042,7 +2037,7 @@ def build_shaders(py, repo, sh, xlate, env, logs, g, pkg_key=None, mac=False, se
     else: key = None
     rmtree(kmac)
     if not mac: rmtree(kf)
-    if seen: rmtree(out)   # what a run leaves is what it built; its keys are in partial-keys.txt
+    if seen: rmtree(out)
     try: PROG.watch(ShaderWatch(g, libs, Path(env['WORK']), pso_pairs, seen))
     except Exception: pass   # progress never stops the build (a missing table is dmsh_build.py's to report)
     # The Metal work follows from what the build produces: an iPhone build needs only the iOS libraries (the macOS
@@ -2087,9 +2082,9 @@ def build_shaders(py, repo, sh, xlate, env, logs, g, pkg_key=None, mac=False, se
     if not seen: shader_regressions(py, repo, sh / 'cache', chain, logs)   # before the key: a stopped build is checked again on the next run
     if key:
         for k in (kmac,) if mac else (kf, kmac) if keep_mac else (kf,): k.write_text(f'{key}\n{note}\n')
-    if not seen:   # last: a build that stopped before here keeps the old libraries
-        prune_stale_chains(sh, chain)
-        if mac: rmtree(sh / 'partial')   # the whole library replaces a partial one; partial-keys.txt stays
+    if not seen:
+        prune_stale_chains(sh, chain)   # last: a build that stopped before here keeps the old libraries
+        if mac: rmtree(sh / 'partial')
     return out
 
 
@@ -2257,8 +2252,7 @@ def mac_host(py, repo, work, env, logs, g):
 def mac_run(work, game, patched, host, font, msl, aoc, gfx, lang, env, logs, g, env_file='', partial=False):
     """The command that runs the game in a window with sound after a Mac-only build (PLATFORM 'mac'; docs/development.md, Build by hand (Mac), step 5): its save and temporary storage in
     <id>_build/run (kept from run to run), the extracted RomFS, the Mac shader libraries (msl), the DLC, the profile's shader map (a host outside dm/host does not find it beside itself;
-    c1_full.tsv and cb_extent.tsv are read beside it), the game language, and the switches of an environment file (DM_ENV_FILE / --env-file). partial (--seen-shaders): the pipeline bases go into an
-    archive of their own, as the prebuild's stamp does not name the library (the whole library would find its bases done), and the command keeps its log, which the next partial build reads"""
+    c1_full.tsv and cb_extent.tsv are read beside it), the game language, and the switches of an environment file (DM_ENV_FILE / --env-file)"""
     rd = work / 'run'
     for d in ('save', 'temp'): (rd / d).mkdir(parents=True, exist_ok=True)
     renv = {'DM_ROOT': work, 'DM_ROMFS': rfs.source(game), 'DM_SAVE': rd / 'save', 'DM_TEMP': rd / 'temp', 'DM_MSL_DIR': msl, 'DM_FONT_DIR': font}
@@ -2266,7 +2260,7 @@ def mac_run(work, game, patched, host, font, msl, aoc, gfx, lang, env, logs, g, 
     if gfx == 'nvn': renv['DM_NVN_SHMAP'] = g.table('shader_map.tsv')
     if partial:
         renv['DM_PSO_ARCHIVE'] = rd / 'pso_archive_partial'
-        (rd / 'pso_archive_partial/prebuilt.tsv').unlink(missing_ok=True)   # the keys may have grown: the prebuild walks the pairs again, and skips what the archive holds
+        (rd / 'pso_archive_partial/prebuilt.tsv').unlink(missing_ok=True)
     renv.update(DM_LANG=lang, DM_WINDOW=1, DM_AUDIO=1)
     if env_file: renv.update(env_file_pairs(env_file))
     if gfx == 'nvn' and g.table('shader_pairs.tsv').is_file():

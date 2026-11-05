@@ -25,17 +25,17 @@ def build(gid, api, platform=None):
         return {s['env']: s for s in settings.build(gid, tmp, Path(tmp) / 'control.nacp')['settings']}
 
 
-def language_row(listed):   # the Game language row for a game whose control data lists these languages
+def language_row(listed):
     with tempfile.TemporaryDirectory() as tmp, patch.object(settings.nacp, 'languages', return_value=listed), patch.dict(os.environ, {'GFXAPI': 'nvn', 'DM_LANG': 'en-US'}):
         return next((s for s in settings.build(BOTW, tmp, Path(tmp) / 'control.nacp')['settings'] if s['env'] == 'DM_LANG'), None)
 
 
 class LauncherSettingsTests(unittest.TestCase):
     def test_game_language_row_offers_the_games_own_or_every_language_when_unknown(self):
-        self.assertIsNone(language_row(['ja']))   # one language: nothing to pick
+        self.assertIsNone(language_row(['ja']))
         s = language_row(['en-US', 'ja'])
         self.assertEqual((s['options'], s['note']), ([['en-US', 'American English'], ['ja', 'Japanese']], ''))
-        s = language_row([])   # no control data: a dump
+        s = language_row([])
         self.assertEqual(s['options'], [list(l) for l in settings.nacp.LANGUAGES])
         self.assertEqual((s['default'], s['note']), ('en-US', settings.UNKNOWN_LANGUAGES))
 

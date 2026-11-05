@@ -725,7 +725,7 @@ class Script(unittest.TestCase):
         self.assertNotIn('--pso', o); self.assertIsNotNone(self.pso_cmd)
 
 
-class SeenShaders(unittest.TestCase):   # --seen-shaders: the keys, the partial library beside the full one, and what must not happen to either
+class SeenShaders(unittest.TestCase):
     CHAIN = '0123456789ab'
 
     def setUp(self):
@@ -733,7 +733,7 @@ class SeenShaders(unittest.TestCase):   # --seen-shaders: the keys, the partial 
         self.sh = self.tmp / 'shader'; self.sh.mkdir(); self.logs = self.tmp / 'logs'; self.ran = []; self.said = []
         self.g = types.SimpleNamespace(table=lambda n: self.tmp / n, dir=self.tmp, id='G', get=lambda k, d=None: d)
         (self.tmp / 'shader_map.tsv').write_text('# c\npackage\tindex\tstage\tkey\tsource\n' + ''.join(f'p.bin\t{i}\tvs\t{k}\tsrc\n' for i, k in enumerate(self.keys('a', 'b', 'c', 'd'))))
-        (self.tmp / 'shader_seen.tsv').write_text('# the keys\nkey\tstage\n' + ''.join(f'{k}\tpixel\n' for k in self.keys('a', 'f')))   # f: not in this version's map
+        (self.tmp / 'shader_seen.tsv').write_text('# the keys\nkey\tstage\n' + ''.join(f'{k}\tpixel\n' for k in self.keys('a', 'f')))
         for cm in (mock.patch.object(nsp, 'run', self.fake_run), mock.patch.object(nsp, 'PROG', mock.Mock()), mock.patch.object(nsp, 'say', self.said.append),
                    mock.patch.object(nsp, 'fingerprint', lambda *a, **k: repr(a)), mock.patch.object(nsp, 'chain_of', lambda repo: self.CHAIN), mock.patch.object(nsp, 'shader_regressions', self.no_call('shader_regressions'))):
             cm.__enter__(); self.addCleanup(cm.__exit__, None, None, None)
@@ -743,7 +743,7 @@ class SeenShaders(unittest.TestCase):   # --seen-shaders: the keys, the partial 
 
     def no_call(self, what): return lambda *a, **k: self.ran.append([what])
 
-    def fake_run(self, cmd, log, env=None, cwd=None, on_line=None):   # own_compilers.py <pkg> <out> [keys], which leaves one library
+    def fake_run(self, cmd, log, env=None, cwd=None, on_line=None):
         self.ran.append(([str(c) for c in cmd], env))
         log.parent.mkdir(exist_ok=True); log.write_text('shaders 1: ok 1\n')
         d = Path(cmd[3]) / f'b-{self.CHAIN}'; d.mkdir(parents=True, exist_ok=True); (d / 'k_b.metallib').write_bytes(b'x')
@@ -757,7 +757,7 @@ class SeenShaders(unittest.TestCase):   # --seen-shaders: the keys, the partial 
 
     def test_option(self):
         self.assertTrue(nsp.parse_args(['--seen-shaders']).seen_shaders); self.assertFalse(nsp.parse_args(['--no-seen-shaders']).seen_shaders)
-        self.assertIsNone(nsp.parse_args([]).seen_shaders); self.assertFalse(nsp.SEEN_SHADERS)   # the default stays the whole map
+        self.assertIsNone(nsp.parse_args([]).seen_shaders); self.assertFalse(nsp.SEEN_SHADERS)
         with mock.patch.object(nsp, 'PROG', mock.Mock()), mock.patch.object(nsp, 'check_native_python'), self.assertRaisesRegex(nsp.BuildError, 'needs --platform mac or mac-app'):
             nsp.main(nsp.parse_args(['--seen-shaders', str(self.tmp)]))
 
@@ -765,16 +765,16 @@ class SeenShaders(unittest.TestCase):   # --seen-shaders: the keys, the partial 
         a, b, c, d = self.keys('a', 'b', 'c', 'd')
         log = self.tmp / 'host.log'; log.write_text(f'[dm] [nvn-mtl] [RED] shader {b} (pixel) failed to load: build the shaders\n[dm] [nvn-mtl] [RED] failed to load shader {c}_b: cannot open /x/{c}_b.metallib\n'
                                                      f'[dm] [RED] failed to load shader {"e" * 16}_b: cannot open\n[RED] failed to load the readable-tile version {d}_b\n')
-        self.assertEqual(self.seen(log, self.tmp / 'no-such.log'), [a, b, c])   # e and f are not in the map, and the builder knows only the map's keys
+        self.assertEqual(self.seen(log, self.tmp / 'no-such.log'), [a, b, c])
         self.assertEqual((self.sh / 'partial-keys.txt').read_text().split(), [a, b, c])
         self.assertTrue(any('3 of 4 shaders' in m and 'the rest will not draw' in m and '2 that earlier runs reported' in m for m in self.said))
 
-    def test_earlier_additions_stay(self):   # a shader that loads no longer shows in the next log
+    def test_earlier_additions_stay(self):
         a, b, c = self.keys('a', 'b', 'c')
         log = self.tmp / 'host.log'; log.write_text(f'[RED] shader {b} (pixel) failed to load: x\n'); self.assertEqual(self.seen(log), [a, b])
         log.write_text(f'[RED] shader {c} (pixel) failed to load: x\n'); self.assertEqual(self.seen(log), [a, b, c])
 
-    def test_no_key_stops(self):   # the builder takes no keys for the whole map
+    def test_no_key_stops(self):
         (self.tmp / 'shader_seen.tsv').write_text('key\tstage\n' + self.keys('f')[0] + '\tpixel\n')
         with self.assertRaisesRegex(nsp.BuildError, 'build the whole map, without --seen-shaders'): self.seen()
 
@@ -784,19 +784,19 @@ class SeenShaders(unittest.TestCase):   # --seen-shaders: the keys, the partial 
 
     def test_partial_library(self):
         a, b = self.keys('a', 'b')
-        old = self.sh / 'partial/b-000000000000'; old.mkdir(parents=True); (old / 'old_b.metallib').write_bytes(b'x')   # emptied first: an older chain's, and a key left out now
+        old = self.sh / 'partial/b-000000000000'; old.mkdir(parents=True); (old / 'old_b.metallib').write_bytes(b'x')
         with mock.patch.object(nsp, 'chain_tables', self.no_call('chain_tables')), mock.patch.object(nsp, 'prune_stale_chains', self.no_call('prune_stale_chains')), \
              mock.patch.object(nsp, 'stale_shaders', self.no_call('stale_shaders')):
             self.assertEqual(self.build([a, b]), self.sh / 'partial')
-            self.assertEqual(len(self.ran), 1, self.ran)   # own_compilers.py alone
+            self.assertEqual(len(self.ran), 1, self.ran)
             cmd, env = self.ran[0]
             self.assertEqual(cmd[2:], [str(self.sh / 'pkg'), str(self.sh / 'partial'), a, b])
             self.assertEqual((env['DMSH_CAS'], env['DMSH_TARGETS']), (str(self.sh / 'cache/cas'), 'mac')); self.assertNotIn('IOSOUT', env)
             self.assertFalse(old.exists()); self.assertTrue((self.sh / f'partial/b-{self.CHAIN}/k_b.metallib').is_file())
-            self.assertFalse((self.sh / f'partial/b-{self.CHAIN}/inputs.tsv').exists()); self.assertFalse((self.tmp / 'c1_full.tsv').exists())   # no stamp: unlisted shaders are not proven safe
-            self.assertEqual(self.build([a, b]), self.sh / 'partial'); self.assertEqual(self.ran, [])   # reused
-            self.build([a]); self.assertEqual(self.ran[0][0][4:], [a])   # the list is in the reuse key
-            self.build([a], 'Q'); self.assertEqual(len(self.ran), 1)   # and the rest of it still counts
+            self.assertFalse((self.sh / f'partial/b-{self.CHAIN}/inputs.tsv').exists()); self.assertFalse((self.tmp / 'c1_full.tsv').exists())
+            self.assertEqual(self.build([a, b]), self.sh / 'partial'); self.assertEqual(self.ran, [])
+            self.build([a]); self.assertEqual(self.ran[0][0][4:], [a])
+            self.build([a], 'Q'); self.assertEqual(len(self.ran), 1)
 
     def test_full_library_untouched_by_a_partial_build(self):
         a, = self.keys('a')
@@ -810,7 +810,7 @@ class SeenShaders(unittest.TestCase):   # --seen-shaders: the keys, the partial 
         self.assertFalse(any('--seen-shaders builds only' in m for m in self.said))
         with mock.patch.object(nsp, 'chain_tables', lambda *a: True), mock.patch.object(nsp, 'stale_shaders', lambda *a: None), mock.patch.object(nsp, 'prune_stale_chains'):
             self.assertEqual(self.build(), self.sh / 'cache')
-        self.assertEqual(self.ran[0][0][2:], [str(self.sh / 'pkg'), str(self.sh / 'cache')])   # no key: the whole map
+        self.assertEqual(self.ran[0][0][2:], [str(self.sh / 'pkg'), str(self.sh / 'cache')])
         self.assertNotIn('DMSH_CAS', self.ran[0][1])
         self.assertTrue(any('building the whole shader map, 4 shaders' in m and '--seen-shaders builds only the 2' in m for m in self.said))
         self.assertFalse((self.sh / 'partial').exists())
@@ -829,13 +829,13 @@ class SeenShaders(unittest.TestCase):   # --seen-shaders: the keys, the partial 
         game = self.tmp / 'ex'; game.mkdir(exist_ok=True); (game / 'RomFS').mkdir(exist_ok=True)
         return nsp.mac_run(self.tmp, game, self.tmp / 'patched', self.tmp / 'dmhost', self.tmp / 'font', self.sh / 'partial', None, 'nvn', 'en-US', {}, self.logs, self.g, **kw)
 
-    def test_run_command(self):   # keeps its log for the next partial build; the bases go into an archive of their own, its stamp cleared as the keys may have grown
+    def test_run_command(self):
         self.assertNotIn('tee', self.run_cmd()); self.assertNotIn('DM_PSO_ARCHIVE', self.run_cmd())
         stamp = self.tmp / 'run/pso_archive_partial/prebuilt.tsv'; stamp.parent.mkdir(parents=True); stamp.write_text('chain\n')
         cmd = self.run_cmd(partial=True)
         self.assertTrue(cmd.endswith(f'2>&1 | tee {self.tmp}/run/host.log')); self.assertIn(f'DM_PSO_ARCHIVE={self.tmp}/run/pso_archive_partial', cmd); self.assertFalse(stamp.exists())
 
-    def test_pack_takes_the_partial_folder(self):   # the app and its pipeline archive read b-<chain> of the folder build_shaders returned
+    def test_pack_takes_the_partial_folder(self):
         ran = []
         def fake_run(cmd, log, env=None, cwd=None, on_line=None):
             ran.append([str(c) for c in cmd])
@@ -850,7 +850,6 @@ class SeenShaders(unittest.TestCase):   # --seen-shaders: the keys, the partial 
         lib = str(self.sh / f'partial/b-{self.CHAIN}')
         pso = next(c for c in ran if c[1].endswith('pso_offline.py')); pack = ran[-1]
         self.assertEqual(pso[pso.index('--msl') + 1], lib); self.assertEqual(pack[pack.index('--msl') + 1], lib)
-
 
 if __name__ == '__main__':
     unittest.main()

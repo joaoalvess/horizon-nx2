@@ -66,7 +66,7 @@ def build(gid, patched, control):
     macros = dict(re.findall(r'^#define (DM_GAME_\w+) (.*)$', game.header(g), re.M))   # the host's own defaults, as it is compiled for this game
     keys = fixups_keys(Path(patched) / 'main.fixups.tsv')
     have = nacp.languages(control)
-    langs = [(c, n) for c, n in nacp.LANGUAGES if not have or c in have]   # no list (a dump has no control data): any language may be the game's, as DM_LANG and the NSP script's check take it
+    langs = [(c, n) for c, n in nacp.LANGUAGES if not have or c in have]
 
     def macro(name, n):
         if name not in macros: sys.exit(f'settings.tsv:{n}: no {name} in the game profile header (game.py header)')
