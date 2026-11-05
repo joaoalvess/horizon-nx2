@@ -12,3 +12,4 @@ Rules for every folder here:
 |---|---|---|
 | [architecture](architecture/README.md) | How the host works: structure, data flow, state, locks, threads, lifetimes | being written |
 | [refactor](refactor/README.md) | Refactor of the NVN / Metal layer for CPU time | active |
+| [upstream](upstream/README.md) | Map of what `seedds/nxnative` does after the fork stopped syncing, and the picks re-implemented here | round 1 mapped up to `975bb4c1` |

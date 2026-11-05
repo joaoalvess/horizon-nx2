@@ -66,6 +66,7 @@ Each step below stopped the boot before its fix:
 
 ## Found on this game
 
+- [No Game language row in an app packed from a dump](../../../docs/reference/packing.md#no-game-language-row-in-an-app-packed-from-a-dump): reported by testers upstream; this folder's dump has no control data.
 - Everything under [Boot](#boot-mac) is new: the first Switch 2 game here.
 - [Ampere shader code (Switch 2)](../../../docs/reference/shaders.md#ampere-shader-code-switch-2): the translator's Ampere frontend, its scoreboard model and the IPA / texture / load semantics found on this game's menu (green boxes instead of text; no text); the tensor instructions, NVN2 compute's c[0] layout and push constants, MUFU SIN / COS in turns, and the storage base rule found in its gameplay.
 - [The Switch 2's order inside a GOB](../../../docs/reference/nvn-objects.md#the-switch-2s-order-inside-a-gob): the textures from its files.
@@ -85,3 +86,4 @@ Each step below stopped the boot before its fix:
 - [LDSM's mode read as a stride](../../../docs/reference/shaders.md#ldsms-mode-read-as-a-stride): the upscaler's 288 .MT88 LDSMs read their rows at four times their address, and the picture came out in blocks from the opening cutscene on (chain 222f2caed44f); clean since the fix.
 - [Submitting thread moved to the efficiency cores](../../../docs/reference/frame-rate.md#submitting-thread-moved-to-the-efficiency-cores): on a MacBook Air, the submitting thread's work went from 2.0-2.5 to 5.2-5.6 ms a frame on the efficiency cores, and the frame-rate controller dropped to 30 fps.
 - [Copies with a blit option on the encode thread](../../../docs/reference/frame-rate.md#copies-with-a-blit-option-on-the-encode-thread): with `enc_thread on`, the depth-plane copies stopped the host in the graphics tests.
+- [GPU timestamps per submission segment](../../../docs/reference/frame-rate.md#gpu-timestamps-per-submission-segment): dynamic resolution read a GPU time of about 0 and kept 2304x1296 in the heavy areas; `gpu_timestamps segment` gives it each segment's GPU time. Upstream measured the step down to 1152x648 and frame p50 50.2 → 33.3 ms on an M1 Pro; open here: not measured, nor with `enc_thread on`.
