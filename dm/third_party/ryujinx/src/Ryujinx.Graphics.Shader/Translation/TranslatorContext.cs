@@ -308,6 +308,7 @@ namespace Ryujinx.Graphics.Shader.Translation
             }
 
             Optimizer.PrivatizeSharedMemory(funcs, resourceManager, Definitions);
+            GlobalToStorage.InitializeGmemLogLast(funcs, resourceManager);
 
             return Generate(
                 funcs,

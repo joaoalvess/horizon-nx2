@@ -163,6 +163,18 @@ namespace Ryujinx.Graphics.Shader.Translation
             return GetHmmaScratchMemoryId(subgroups);
         }
 
+        public int GmemLogLastMemoryId { get; private set; } = -1;
+
+        public int GetGmemLogLastMemoryId()
+        {
+            if (GmemLogLastMemoryId < 0)
+            {
+                GmemLogLastMemoryId = AddMemoryDefinition("gmem_log_last", AggregateType.U32);
+            }
+
+            return GmemLogLastMemoryId;
+        }
+
         public void SetVertexAsComputeLocalMemories(ShaderStage stage, InputTopology inputTopology)
         {
             LocalVertexDataMemoryId = AddMemoryDefinition("local_vertex_data", AggregateType.Array | AggregateType.FP32, Reservations.OutputSizePerInvocation);

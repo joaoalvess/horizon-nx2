@@ -279,6 +279,33 @@ namespace Ryujinx.Graphics.Shader.Translation.Optimizations
             }
         }
 
+        public static void InitializeGmemLogLast(IReadOnlyList<Function> functions, ResourceManager resourceManager)
+        {
+            if (resourceManager.GmemLogLastMemoryId < 0 || functions[0].Blocks.Length == 0)
+            {
+                return;
+            }
+
+            LinkedList<INode> entry = functions[0].Blocks[0].Operations;
+            LinkedListNode<INode> first = entry.First;
+
+            while (first != null && first.Value is PhiNode)
+            {
+                first = first.Next;
+            }
+
+            Operation store = new(Instruction.Store, StorageKind.LocalMemory, null, Const(resourceManager.GmemLogLastMemoryId), Const(0));
+
+            if (first == null)
+            {
+                entry.AddLast(store);
+            }
+            else
+            {
+                entry.AddBefore(first, store);
+            }
+        }
+
         private static bool IsGlobalMemory(StorageKind storageKind)
         {
             return storageKind is StorageKind.GlobalMemory or
@@ -786,12 +813,11 @@ namespace Ryujinx.Graphics.Shader.Translation.Optimizations
         private const int GmemMapLog2 = 12;
         private const int GmemMapEntryWords = 8;
 
-        // nxnative: the write log (dmsh_abi.h DMSH_GMEM_LOG_*), reserved under the same sentinel slot at offset 1: the set of guest pages (address >> 12) the stores and atomics wrote,
-        // as an open-addressing hash set of 1 << GmemLogLog2 words from word 1 (0 = empty), word 0 set when a page found no free slot in GmemLogProbes tries. The host cannot know where
-        // a store through a loaded pointer lands before the GPU runs it; it learns the pages from the log. A set, not a list: one draw of Donkey Kong Bananza stores 7,325 times into a few dozen pages
+        // nxnative: the write log (dmsh_abi.h DMSH_GMEM_LOG_*), reserved under the same sentinel slot at offset 1: a bitmap of the pool table's entries the stores and atomics wrote into,
+        // bit k of word k >> 5 for entry k. The host cannot know where a store through a loaded pointer lands before the GPU runs it; it learns the pools from the log. Each thread keeps the
+        // last entry it logged (gmem_log_last, set to 0 at the start of main by InitializeGmemLogLast; entry 0 is never logged), so a store into the same pool adds nothing. A set of pages
+        // ran out of its 1,024 slots in every dispatch of The Legend of Zelda: Ocarina of Time's title movie network, whose stores then made 8 failed compare-and-swaps each
         private const int GmemLogCbOffset = 1;
-        private const int GmemLogLog2 = 10;
-        private const int GmemLogProbes = 8;
 
         // nxnative: a global memory access whose address the search traced to no storage buffer, an address the shader loaded from memory (Donkey Kong Bananza: gsys's vertex
         // shader that resets the terrain's indirect draw records reads each record's address from a storage buffer). Ryujinx drops such an access (a load reads 0). Here it
@@ -880,20 +906,12 @@ namespace Ryujinx.Graphics.Shader.Translation.Optimizations
 
             if (writes)
             {
-                // A page in a pool is never 0 (the guest's first page is not mapped), so 0 marks an empty slot
-                Operand page = context.BitwiseOr(context.ShiftLeft(addrHigh, Const(20)), context.ShiftRightU32(addrLow, Const(12)));
-                Operand hash = context.ShiftRightU32(context.IMultiply(page, Const(unchecked((int)0x9e3779b1))), Const(32 - GmemLogLog2));
-
+                int lastId = resourceManager.GetGmemLogLastMemoryId();
                 Operand lblLogged = Label();
 
-                for (int probe = 0; probe < GmemLogProbes; probe++)
-                {
-                    Operand slot = context.IAdd(context.BitwiseAnd(context.IAdd(hash, Const(probe)), Const((1 << GmemLogLog2) - 1)), Const(1));
-                    Operand old = context.AtomicCompareAndSwap(StorageKind.StorageBuffer, logBinding, Const(0), slot, Const(0), page);
-                    context.BranchIfTrue(lblLogged, context.BitwiseOr(context.ICompareEqual(old, Const(0)), context.ICompareEqual(old, page)));
-                }
-
-                context.Store(StorageKind.StorageBuffer, logBinding, Const(0), Const(0), Const(1));
+                context.BranchIfFalse(lblLogged, context.ICompareNotEqual(index, context.Load(StorageKind.LocalMemory, lastId)));
+                context.Store(StorageKind.LocalMemory, lastId, index);
+                context.AtomicOr(StorageKind.StorageBuffer, logBinding, Const(0), context.ShiftRightU32(index, Const(5)), context.ShiftLeft(Const(1), context.BitwiseAnd(index, Const(31))));
                 context.MarkLabel(lblLogged);
             }
 
