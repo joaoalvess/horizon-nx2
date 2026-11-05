@@ -10,7 +10,7 @@ A Switch 2 game: update v655360 (the title screen says Ver. 2.0.1), SDK 20.5.25 
 | `mem_used 0x5600000` | `game.tsv` | the rewritten modules take 82 MB, more than the default 64 MB that `SetHeapSize` checks the game's request against |
 | `pad_layout full` | `game.tsv` | |
 | `present_snap on` | `game.tsv` | on a MacBook Air M4 (docked, 1920x1080) the GPU idled waiting for one of the game's 3 swapchain textures and macOS clocked it down: about 47 fps without, a steady 60 while the Mac is thermal nominal ([Present snapshots](../../../docs/reference/frame-rate.md#present-snapshots-the-games-swapchain-texture-free-at-once)) |
-| `depth_mode zero` | `game.tsv` | the game sets near = 0 (the log's `depth mode` line). Without the key the pipeline archive made offline holds the other entry point, and the host refuses it |
+| `depth_mode zero` | `game.tsv` | the game sets near = 0 (the log's `depth mode` line). Without the key the pipeline bases made before it runs (a packed app's offline archive, the `--platform mac` prebuild) are for the other mode, and its draws cannot use them |
 
 ## Files
 
