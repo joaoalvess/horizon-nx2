@@ -836,6 +836,7 @@ class SeenShaders(unittest.TestCase):
         self.assertTrue(cmd.endswith(f'2>&1 | tee {self.tmp}/run/host.log')); self.assertIn(f'DM_PSO_ARCHIVE={self.tmp}/run/pso_archive_partial', cmd); self.assertFalse(stamp.exists())
 
     def test_pack_takes_the_partial_folder(self):
+        msl = self.build(self.keys('a'))
         ran = []
         def fake_run(cmd, log, env=None, cwd=None, on_line=None):
             ran.append([str(c) for c in cmd])
@@ -845,7 +846,7 @@ class SeenShaders(unittest.TestCase):
             if on_line: (self.tmp / 'G.app/Contents/MacOS').mkdir(parents=True, exist_ok=True); (self.tmp / 'G.app/Contents/MacOS/dmhost').write_bytes(b'x')
         (self.tmp / 'shader_pairs.tsv').write_text('v\tf\n')
         with mock.patch.object(nsp, 'run', fake_run), mock.patch.object(nsp, 'mac_gpu_arch', lambda *a: 'applegpu_g14s'):
-            nsp.mac_app(sys.executable, REPO, self.tmp / 'G.app', 0x01008CF01BAAC000, self.tmp, self.tmp / 'ex', self.tmp / 'patched', self.tmp / 'dmhost', self.tmp / 'font', self.sh / 'partial',
+            nsp.mac_app(sys.executable, REPO, self.tmp / 'G.app', 0x01008CF01BAAC000, self.tmp, self.tmp / 'ex', self.tmp / 'patched', self.tmp / 'dmhost', self.tmp / 'font', msl,
                         None, 'nvn', 'en-US', self.g, 'Game', '1.0.0', 'org.x', None, '', {}, self.tmp)
         lib = str(self.sh / f'partial/b-{self.CHAIN}')
         pso = next(c for c in ran if c[1].endswith('pso_offline.py')); pack = ran[-1]
