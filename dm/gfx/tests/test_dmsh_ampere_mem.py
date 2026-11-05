@@ -561,12 +561,28 @@ class StorageSlotSum(Translated):
         msl = self.msl(self.iadd3(2, 0, 1), inst(*Shared.ISETP_P0), self.iadd3(2, 0, cbuf=0x50), self.iadd3(2, 1, cbuf=0x10, pred=0))
         self.assertNotIn('reinterpret_cast<device', msl)
         helpers = msl[msl.index('static inline'):msl.index('kernel void')]
-        for slot in (49, 53):   # c0[0x310] and c0[0x350]: low subtraction borrows from high, then size and high must match
-            with self.subTest(slot=slot):
-                self.assertEqual(len(re.findall(rf'uint\(_\d+\) < as_type<uint>\(cp_c0\._m0\[{slot}\]\.x\)', helpers)), 2)
-                self.assertEqual(len(re.findall(rf'uint\(_\d+\) < as_type<uint>\(cp_c0\._m0\[{slot}\]\.z\)', helpers)), 2)
-                self.assertEqual(len(re.findall(rf'== as_type<int>\(cp_c0\._m0\[{slot}\]\.y\)', helpers)), 2)
-        self.assertEqual(len(re.findall(r'\+ \(_\d+ \? \(-1\) : 0\)', helpers)), 4)
+        dispatches = re.findall(r'(int|void) _\d+\([^\n]*\)\n\{([\s\S]*?)\n\}', helpers)
+        self.assertEqual([kind for kind, _ in dispatches], ['int', 'void'])
+        for kind, helper in dispatches:
+            for slot, buffer in ((49, 'cp_s0'), (53, 'cp_s1')):
+                with self.subTest(operation=kind, slot=slot):
+                    base = rf'cp_c0\._m0\[{slot}\]'
+                    # Follow the comparison results into the actual dispatch branch. Merely
+                    # counting comparisons also passes when && becomes || (a wrong buffer).
+                    checked = re.search(
+                        rf'int (?P<offset>_\d+) = (?P<low>_\d+) - as_type<int>\({base}\.x\);\s*'
+                        rf'bool (?P<borrow>_\d+) = uint\((?P=low)\) < as_type<uint>\({base}\.x\);\s*'
+                        rf'bool (?P<size>_\d+) = uint\((?P=offset)\) < as_type<uint>\({base}\.z\);\s*'
+                        r'int (?P<high>_\d+) = _\d+ \+ \((?P=borrow) \? \(-1\) : 0\);\s*'
+                        rf'bool (?P<match>_\d+) = (?P=high) == as_type<int>\({base}\.y\);\s*'
+                        r'bool (?P<condition>_\d+) = (?P=size) && (?P=match);\s*'
+                        r'if \((?P=condition)\)\s*\{(?P<body>[^{}]*)\}', helper)
+                    self.assertIsNotNone(checked, helper)
+                    body = checked.group('body')
+                    if kind == 'int':
+                        self.assertRegex(body, rf'float (_\d+) = as_type<float>\({buffer}\._m0\[[^;]+\);\s*return as_type<int>\(\1\);')
+                    else:
+                        self.assertRegex(body, rf'{buffer}\._m0\[[^;]+ = uint\(_\d+\);\s*return;')
 
     def test_sums_on_two_paths_keep_the_pool_search(self):   # needsOffset=false must not pick either sum's nested base while collecting Phi targets
         for reverse in (False, True):
