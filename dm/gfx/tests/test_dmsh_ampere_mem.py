@@ -24,6 +24,16 @@ class Translated(unittest.TestCase):
             r = subprocess.run([os.environ['DMSH_TEST_XLATE'], str(work / 'jobs.json'), d], capture_output=True, text=True)
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
             self.assertTrue((work / 'k.spv').exists(), r.stdout + r.stderr)
+            self.resources = json.loads((work / 'k.res.json').read_text())
+            words = struct.unpack('<%dI' % ((work / 'k.spv').stat().st_size // 4), (work / 'k.spv').read_bytes())
+            self.spirv = []
+            offset = 5
+            while offset < len(words):
+                size, opcode = words[offset] >> 16, words[offset] & 0xffff
+                self.assertGreater(size, 0)
+                self.assertLessEqual(offset + size, len(words))
+                self.spirv.append((opcode, words[offset + 1:offset + size]))
+                offset += size
             sys.path.insert(0, str(TOOLS)); import dmsh_geometry
             dmsh_geometry.flatten_sets(work / 'k.spv')
             r = subprocess.run([str(TOOLS / 'spirv_cross_bin/spirv-cross'), '--msl', '--msl-version', '20300', '--msl-argument-buffers', '--msl-texture-buffer-native',
@@ -591,6 +601,210 @@ class StorageSlotSum(Translated):
                 msl = self.msl(self.iadd3(2, 0, 1), inst(*Shared.ISETP_P0), self.iadd3(5, 0, cbuf=0x50), self.iadd3(2, ra, rb),
                                self.iadd3(5, 0, cbuf=0x10), self.iadd3(2, ra, rb, pred=0))
                 self.assertIn('reinterpret_cast<device', msl)
+
+
+class GlobalFloatAdd(Translated):
+    """Synthetic RED/ATOMG fields from Mesa NAK sm70_encode.rs (OpAtom): no game shader dumps.
+
+    Opcode 0x98e = RED, 0x3a8/0x9a8 = ATOMG; Rd 16..24, Ra 24..32,
+    Rb 32..40, offset 40..64, .E 72, type 73..76 (F32=3), ADD 87..91=0.
+    Guard 12..16; control fields select no deferred write barrier.
+    """
+    def atomic(self, opcode=0x3a8, size=3, pred=7, rd=0, operation=0):
+        return inst(0x000fe20000000000 | 1 << 8 | size << 9 | operation << 23,
+                    4 << 32 | 2 << 24 | rd << 16 | pred << 12 | opcode)
+
+    def fixture(self, opcode=0x3a8, size=3, pred=7, rd=0, raw=False, operation=0, **extra):
+        if raw:
+            address = lds(2, 0xff, 0x10) + lds(3, 0xff, 0x14)
+        else:
+            address = StorageSlotSum.iadd3(self, 2, 0xff, cbuf=0x10) + StorageSlotSum.iadd3(self, 3, 0xff, cbuf=0x14)
+        source = lds(4, 0xff, 0x18)
+        result = sts(0x20, rd) if opcode != 0x98e and rd != 0xff else b''
+        return self.translate(address + source + self.atomic(opcode, size, pred, rd, operation) + result + inst(*EXIT),
+                              shared=0x400, nvn2_cs=[0, 1, 0, 0x20, 0], **extra)
+
+    def flow(self):
+        """Track emitted bit expressions through SPIR-V temporaries, including the loop's state.
+
+        One symbolic pass checks the retry's observed/expected dataflow; it does not
+        simulate GPU execution or make a concurrency claim.
+        """
+        values, memory, atomics, branches, stores = {}, {}, [], [], []
+        for op, a in self.spirv:
+            if op == 43: values[a[1]] = a[2]  # OpConstant
+            elif op == 61: values[a[1]] = memory.get(a[2], ('load', a[2]))
+            elif op == 62:
+                memory[a[0]] = values[a[1]]
+                stores.append((a[0], values[a[1]]))
+            elif op in (83, 124): values[a[1]] = values[a[2]]  # CopyObject / Bitcast
+            elif op in (129, 169, 170, 171, 199):
+                names = {129: 'fadd', 169: 'select', 170: 'eq', 171: 'ne', 199: 'and'}
+                values[a[1]] = (names[op], *(values[x] for x in a[2:]))
+            elif op == 230:  # OpAtomicCompareExchange: desired, expected (in that order)
+                values[a[1]] = ('cas', len(atomics))
+                atomics.append((a[2], values[a[7]], values[a[6]]))
+            elif op == 250: branches.append(values[a[0]])
+        return atomics, branches, stores
+
+    @staticmethod
+    def ftz(x):
+        return ('select', ('eq', ('and', x, 0x7f800000), 0), ('and', x, 0x80000000), x)
+
+    def assert_float_cas(self, returning=True):
+        atomics, branches, stores = self.flow()
+        self.assertEqual(len(atomics), 2)
+        self.assertEqual(atomics[0][1:], (0, 0))  # atomic read, never a plain racing load
+        self.assertEqual(atomics[1][1], ('cas', 0))
+        self.assertEqual(branches[-1], ('ne', ('cas', 1), ('cas', 0)))  # bit comparison, including NaNs
+        desired = atomics[1][2]
+        self.assertEqual(desired, self.ftz(desired[-1]))
+        add = desired[-1]
+        self.assertEqual(add[:2], ('fadd', self.ftz(('cas', 0))))
+        self.assertEqual(add[2], self.ftz(add[2][-1]))
+        self.assertEqual(add[2][-1][0], 'load')
+        if returning:
+            self.assertEqual(stores[-1][1], ('cas', 1))  # old bits, not desired sum or fabricated zero
+        additions = [a[1] for op, a in self.spirv if op == 129]
+        self.assertEqual(len(additions), 1)
+        self.assertIn((71, (additions[0], 42)), self.spirv)  # NoContraction, even with reduced=True
+        self.assertFalse(any(op == 234 for op, _ in self.spirv))  # no integer AtomicIAdd
+        self.assertEqual(self.resources['notes'], [])
+        self.assertTrue(self.resources['sbufs'][0]['flags'] & 1)  # write metadata
+
+    def test_atomg_returns_old_bits_and_retries_with_new_observation(self):
+        msl = self.fixture(reduced=True)
+        self.assert_float_cas()
+        self.assertEqual(msl.count('atomic_compare_exchange_weak_explicit'), 2)
+        self.assertIn('spvFAdd', msl)
+        self.assertNotIn('reinterpret_cast<device', msl)
+
+    def test_red_keeps_the_update_without_a_result(self):
+        self.fixture(opcode=0x98e)
+        self.assert_float_cas(returning=False)
+
+    def test_two_atomics_keep_separate_observations_and_old_values(self):
+        address = StorageSlotSum.iadd3(self, 2, 0xff, cbuf=0x10) + StorageSlotSum.iadd3(self, 3, 0xff, cbuf=0x14)
+        self.translate(address + lds(4, 0xff, 0x18) + self.atomic(rd=0) + self.atomic(rd=1)
+                       + sts(0x20, 0) + sts(0x24, 1) + inst(*EXIT), shared=0x400, nvn2_cs=[0, 1, 0, 0x20, 0])
+        atomics, branches, stores = self.flow()
+        self.assertEqual(len(atomics), 4)
+        self.assertEqual(atomics[1][1], ('cas', 0))
+        self.assertEqual(atomics[3][1], ('cas', 2))
+        self.assertEqual(branches, [('ne', ('cas', 1), ('cas', 0)), ('ne', ('cas', 3), ('cas', 2))])
+        self.assertEqual([v for _, v in stores[-2:]], [('cas', 1), ('cas', 3)])
+        private = [a[1] for op, a in self.spirv if op == 59 and a[2] == 6]  # Private variables
+        self.assertEqual(len(private), 2)
+        self.assertNotEqual(private[0], private[1])
+
+    def test_emitted_ftz_and_add_expressions_at_float_boundaries(self):
+        self.fixture(reduced=True)
+        desired = self.flow()[0][1][2]
+
+        def evaluate(expr, old, addend):
+            if isinstance(expr, int): return expr
+            op, *args = expr
+            if op == 'cas': return old
+            if op == 'load': return addend
+            if op == 'select':
+                return evaluate(args[1] if evaluate(args[0], old, addend) else args[2], old, addend)
+            a, b = (evaluate(x, old, addend) for x in args)
+            if op == 'and': return a & b
+            if op == 'eq': return a == b
+            self.assertEqual(op, 'fadd')
+            x, y = (struct.unpack('<f', struct.pack('<I', v))[0] for v in (a, b))
+            try: return f32(x + y)  # one nearest-even F32 rounding of the emitted add
+            except OverflowError: return 0xff800000 if x + y < 0 else 0x7f800000
+
+        # Evaluate the generated expressions, not an independently coded FTZ algorithm.
+        # This checks CPU bit semantics only; GPU arithmetic/concurrency remain untested.
+        cases = [(0x3f800000, 0x33800000, 0x3f800000),  # tie rounds down to even
+                 (0x3f800001, 0x33800000, 0x3f800002),  # tie rounds up to even
+                 (0, 0x80000000, 0), (0x80000000, 0x80000000, 0x80000000),
+                 (1, 1, 0), (0x007fffff, 0x80000000, 0),
+                 (0x807fffff, 0x80000000, 0x80000000), (0x80000000, 0x80000001, 0x80000000),
+                 (0x00800001, 0x80800000, 0), (0x80800001, 0x00800000, 0x80000000),
+                 (0x7f800000, 0x3f800000, 0x7f800000), (0xff800000, 0xbf800000, 0xff800000),
+                 (0x7f7fffff, 0x7f7fffff, 0x7f800000)]
+        for old, addend, expected in cases:
+            with self.subTest(old=hex(old), addend=hex(addend)):
+                self.assertEqual(evaluate(desired, old, addend), expected)
+        for old, addend in ((0x7fc00001, 0), (0, 0xffc00001), (0x7f800000, 0xff800000)):
+            with self.subTest(old=hex(old), addend=hex(addend)):
+                result = evaluate(desired, old, addend)
+                self.assertEqual(result & 0x7f800000, 0x7f800000)
+                self.assertNotEqual(result & 0x007fffff, 0)
+
+    def test_both_atomg_opcodes_and_a_discarded_destination_keep_the_update(self):
+        for opcode in (0x3a8, 0x9a8):
+            with self.subTest(opcode=opcode):
+                self.fixture(opcode=opcode, rd=0xff, debug=False)
+                self.assertTrue(any(op == 230 for op, _ in self.spirv))
+                self.assertEqual(self.resources['notes'], [])
+
+    def test_raw_pool_address_keeps_cas_and_write_log(self):
+        for opcode in (0x98e, 0x3a8):
+            with self.subTest(opcode=opcode):
+                msl = self.fixture(opcode=opcode, raw=True)
+                self.assertIn('reinterpret_cast<device', msl)
+                self.assertIn('atomic_compare_exchange_weak_explicit', msl)
+                self.assertIn('atomic_fetch_or_explicit', msl)
+                self.assertFalse(any('Invalid reduction type' in n for n in self.resources['notes']))
+                self.assertTrue(any('memory pool table' in n for n in self.resources['notes']))
+                self.assertTrue(any(b['flags'] & 1 for b in self.resources['sbufs']))
+
+    def test_false_predication_skips_the_entire_operation(self):
+        for opcode in (0x98e, 0x3a8):
+            with self.subTest(opcode=opcode):
+                self.fixture(opcode=opcode, pred=15)  # @!PT
+                self.assertFalse(any(op in (129, 230, 234) for op, _ in self.spirv))
+
+    def test_dynamic_predication_guards_both_atomics(self):
+        for opcode in (0x98e, 0x3a8):
+            with self.subTest(opcode=opcode):
+                code = s2r(2, TID_X) + inst(*Shared.ISETP_P0)  # dynamic P0, then address setup
+                address = StorageSlotSum.iadd3(self, 2, 0xff, cbuf=0x10) + StorageSlotSum.iadd3(self, 3, 0xff, cbuf=0x14)
+                msl = self.translate(code + address + mov(4, f32(1.0)) + self.atomic(opcode, pred=0) + inst(*EXIT),
+                                     nvn2_cs=[0, 1, 0, 0x20, 0])
+                body = msl[msl.index('kernel void'):]
+                guard = body.index('if (')
+                self.assertLess(guard, body.index('atomic_compare_exchange_weak_explicit'))
+                self.assertEqual(body.count('atomic_compare_exchange_weak_explicit'), 2)
+                self.assertTrue(body.rstrip().endswith('}\n}'))  # both CAS calls inside the guard
+
+    def test_fragment_helpers_skip_initial_read_and_retry(self):
+        header = bytearray(0x80)
+        struct.pack_into('<I', header, 0, 5 << 10 | 3 << 5 | 1)  # synthetic fragment SPH
+        for opcode in (0x98e, 0x3a8):
+            with self.subTest(opcode=opcode):
+                msl = self.translate(header + mov(2, 0x1000) + mov(3, 0) + mov(4, f32(1.0)) + self.atomic(opcode) + inst(*EXIT), stage='ps')
+                body = msl[msl.index('fragment void'):]
+                self.assertIn('simd_is_helper_thread()', body)
+                self.assertRegex(body, r'if \(!\(as_type<int>\(_\d+\) != 0\)\)')
+                # Pool helper calls, including its initial CAS and write logging, are inside that guard.
+                calls = re.findall(r'int _\d+ = (_\d+)\(', body)
+                self.assertEqual(len(calls), 2)
+                self.assertEqual(calls[0], calls[1])
+                self.assertLess(body.index('if ('), body.index(calls[0] + '('))
+                self.assertTrue(body.rstrip().endswith('}\n}'))
+                self.assertTrue(any(op == 71 and a[1:] == (11, 23) for op, a in self.spirv))  # BuiltIn HelperInvocation
+
+    def test_integer_global_atomics_still_use_integer_add(self):
+        for opcode in (0x98e, 0x3a8, 0x9a8):
+            for size in (0, 1):  # U32 / S32
+                with self.subTest(opcode=opcode, size=size):
+                    msl = self.fixture(opcode=opcode, size=size)
+                    self.assertIn('atomic_fetch_add_explicit', msl)
+                    self.assertTrue(any(op == 234 for op, _ in self.spirv))
+                    self.assertFalse(any(op in (129, 230) for op, _ in self.spirv))
+                    self.assertEqual(self.resources['notes'], [])
+
+    def test_other_float_operations_stay_outside_the_add_lowering(self):
+        for operation in (1, 2, 5, 6, 7, 8):  # MIN, MAX, AND, OR, XOR, EXCH
+            with self.subTest(operation=operation):
+                self.fixture(operation=operation)
+                self.assertTrue(any('Invalid reduction type: F32FtzRn' in n for n in self.resources['notes']))
+                self.assertFalse(any(op in (129, 230, 234) for op, _ in self.spirv))
 
 
 if __name__ == '__main__':
