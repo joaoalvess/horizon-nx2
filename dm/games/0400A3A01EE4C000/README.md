@@ -14,7 +14,7 @@ A Switch 2 game: update v655360 (the title screen says Ver. 2.0.1), SDK 20.5.25 
 ## Files
 
 - A dump folder whose `updates/<version>/` holds the whole RomFS; [`pack_dump.py`](../../../scripts/pack_dump.py) packs it without a base RomFS. RomFS: the newer RDB (as ROMANCE OF THE THREE KINGDOMS 8 REMAKE's) under `motor_asset_re/KIDS_PLATFORM_OUNCE`, and a `LD_C0_R.BIN` / `LI_C0_R.IDX` LINKDATA pair.
-- Shaders: 131,426 in [`shader_map.tsv`](shader_map.tsv) ([KTGL on NVN2](../../../docs/reference/shaders.md#ktgl-on-nvn2-switch-2-glslc-outputs-and-ld_--li_-linkdata)). Runs so far asked for about 8,158 of them. This Mac build holds only those, so its library has no stamp and no `c1_full.tsv`, and each start logs that in red. A full build is estimated at 11 hours.
+- Shaders: 131,426 in [`shader_map.tsv`](shader_map.tsv) ([KTGL on NVN2](../../../docs/reference/shaders.md#ktgl-on-nvn2-switch-2-glslc-outputs-and-ld_--li_-linkdata)). Runs so far asked for about 8,158 of them. This Mac build holds only those, so its library has no stamp and no `c1_full.tsv`, and each start logs that in red. A full build was estimated at 11 hours before [the builder stopped keeping the 4.4 GB of packages in memory](../../../docs/reference/shaders.md#a-shader-build-that-keeps-its-packages-in-memory-runs-one-worker-at-a-time) and [its compiles stopped instantiating Metal's texture classes again](../../../docs/reference/shaders.md#each-metal-compile-instantiates-metals-texture-classes-again); not measured since.
 - No `pso_manifest.tsv` yet, so each start also logs a red line for the missing seed list. In the runs here no draw waited on it.
 
 ## Shaders
@@ -40,14 +40,18 @@ The first boot shows the language list: `A`, `LUp`, `A` picks English. The chara
 
 ## Found on this game
 
+- [One compile for a pixel shader's side entry points](../../../docs/reference/shaders.md#one-compile-for-a-pixel-shaders-side-entry-points): on upstream nxnative, 57% of the map's compiles were `_ba` and `_bl` libraries, and a cold build of 1,021 shaders took 48% of the CPU with it on the Mac's flags and 47% on the iPhone's.
 - [KTGL on NVN2: Switch 2 GLSLC outputs and LD_ / LI_ LINKDATA](../../../docs/reference/shaders.md#ktgl-on-nvn2-switch-2-glslc-outputs-and-ld_--li_-linkdata): the split found almost none of its shaders.
 - [HADD2 and HMUL2 with an immediate](../../../docs/reference/shaders.md#hadd2-and-hmul2-with-an-immediate): the GPU hang and 88 ms frames.
 - [Scaled shared memory addresses](../../../docs/reference/shaders.md#scaled-shared-memory-addresses): stride 3 in use, on accesses of every size.
 - [HFMA2 .H0_NH1](../../../docs/reference/shaders.md#hfma2-h0_nh1).
 - [LDC with a segmented address (.IS)](../../../docs/reference/shaders.md#ldc-with-a-segmented-address-is): `cc679c7b4d3e703c`.
 - [Ampere instructions new in Pokémon Pokopia](../../../docs/reference/shaders.md#ampere-instructions-new-in-pokémon-pokopia).
+- [A shader build that keeps its packages in memory runs one worker at a time](../../../docs/reference/shaders.md#a-shader-build-that-keeps-its-packages-in-memory-runs-one-worker-at-a-time): the full build at one or two shaders a second (resolved).
+- [Each Metal compile instantiates Metal's texture classes again](../../../docs/reference/shaders.md#each-metal-compile-instantiates-metals-texture-classes-again): the full build's remaining hours.
+- [A library that depends on its source's file name](../../../docs/reference/shaders.md#a-library-that-depends-on-its-sources-file-name): on upstream nxnative, two `_bl` files differed between cold builds of the same code.
 - [Integer buffer textures read through float slots](../../../docs/reference/rendering.md#integer-buffer-textures-read-through-float-slots).
 - [Present snapshots](../../../docs/reference/frame-rate.md#present-snapshots-the-games-swapchain-texture-free-at-once): 47 fps without them on a MacBook Air M4.
 - [The Joy-Con mouse pointer](../../../docs/reference/services.md#the-joy-con-mouse-pointer) and [GameShare guest displays](../../../docs/reference/services.md#gameshare-guest-displays): boot aborts.
 - [Half pairs rebuilt from halves of other pairs](../../../docs/reference/shaders.md#half-pairs-rebuilt-from-halves-of-other-pairs): `8743dd823fc8e863`'s 107 halfword masks, shifts and ors, 18 left.
-- [Shared memory past 32 KB that each invocation uses alone](../../../docs/reference/shaders.md#shared-memory-past-32-kb-that-each-invocation-uses-alone): 64 of the 160 froxel lighting kernels over Metal's limit make their pipelines (the other 96 open).
+- [Shared memory past 32 KB that each invocation uses alone](../../../docs/reference/shaders.md#shared-memory-past-32-kb-that-each-invocation-uses-alone): 64 of the 160 froxel lighting kernels over Metal's limit make their pipelines; the other 96 take their shared memory from a device buffer ([Compute shared memory past 32 KB](../../../docs/reference/shaders.md#compute-shared-memory-past-32-kb)), built offline and not yet booted.
