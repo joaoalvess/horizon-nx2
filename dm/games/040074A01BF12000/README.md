@@ -66,6 +66,7 @@ Each step below stopped the boot before its fix:
 
 ## Found on this game
 
+- [A depth clear over the whole target with a partial stencil mask](../../../docs/reference/rendering.md#a-depth-clear-over-the-whole-target-with-a-partial-stencil-mask): its first pass loaded the whole depth and stencil target every frame for a stencil mask of 1 (upstream nxnative measured 22.8 MB a frame). The fix is in; open until a boot checks it.
 - Everything under [Boot](#boot-mac) is new: the first Switch 2 game here.
 - [Ampere shader code (Switch 2)](../../../docs/reference/shaders.md#ampere-shader-code-switch-2): the translator's Ampere frontend, its scoreboard model and the IPA / texture / load semantics found on this game's menu (green boxes instead of text; no text); the tensor instructions, NVN2 compute's c[0] layout and push constants, MUFU SIN / COS in turns, and the storage base rule found in its gameplay.
 - [The Switch 2's order inside a GOB](../../../docs/reference/nvn-objects.md#the-switch-2s-order-inside-a-gob): the textures from its files.
@@ -85,3 +86,5 @@ Each step below stopped the boot before its fix:
 - [LDSM's mode read as a stride](../../../docs/reference/shaders.md#ldsms-mode-read-as-a-stride): the upscaler's 288 .MT88 LDSMs read their rows at four times their address, and the picture came out in blocks from the opening cutscene on (chain 222f2caed44f); clean since the fix.
 - [Submitting thread moved to the efficiency cores](../../../docs/reference/frame-rate.md#submitting-thread-moved-to-the-efficiency-cores): on a MacBook Air, the submitting thread's work went from 2.0-2.5 to 5.2-5.6 ms a frame on the efficiency cores, and the frame-rate controller dropped to 30 fps.
 - [Copies with a blit option on the encode thread](../../../docs/reference/frame-rate.md#copies-with-a-blit-option-on-the-encode-thread): with `enc_thread on`, the depth-plane copies stopped the host in the graphics tests.
+- [Odd present intervals on the 30 Hz display link](../../../docs/reference/frame-rate.md#odd-present-intervals-on-the-30-hz-display-link): interval 3 took 66.7 ms a frame, 15 fps for 20.
+- [Upsample pass reading the level above the one it renders](../../../docs/reference/rendering.md#upsample-pass-reading-the-level-above-the-one-it-renders): a pass dump of the stage intro shows the bloom's upsample drawing level 3 of the texture it samples through the view of the levels below; in upstream nxnative ([seedds/nxnative#1073](https://github.com/seedds/nxnative/pull/1073)) its neon letters came out fat and filled. The fix is in; open until a boot checks it.

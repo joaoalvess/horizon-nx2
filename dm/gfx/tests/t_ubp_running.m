@@ -25,6 +25,33 @@ static void words(const uint32_t *got, const uint32_t *want, int n, const char *
     if (got) for (int i = 0; i < n; i++) if (got[i] != want[i]) fprintf(stderr, "  word %d: %#x, want %#x\n", i, got[i], want[i]);
 }
 
+static void window_case(void) {
+    uint8_t *w = mmap((void *)(UBD_BM_BASE + 0x100000), LEN, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0);
+    CHECK(w == (uint8_t *)(UBD_BM_BASE + 0x100000), "memory allocated inside the guest address window"); if (w != (uint8_t *)(UBD_BM_BASE + 0x100000)) return;
+    mtl_pool_add(w, LEN); memset(w, 0x33, LEN);
+    uint64_t a = (uint64_t)w, pg = (a + 0x40 - UBD_BM_BASE) >> 12; uint32_t v[4] = {0x51, 0x52, 0x53, 0x54};
+    ubd_land_compute(); if (g_blit) { enc_b_end(g_blit); g_blit = nil; }
+    CHECK(!g_nubd && ubd_bm_in(a, a + LEN), "lookups inside the window take the bitmap");
+    mtl_sub_update(v, a + 0x40, 16);
+    CHECK(g_nubd == 1 && (g_ubd_bm[pg >> 6] >> (pg & 63) & 1), "a deferred update inside the window sets its page's bit");
+    CHECK(ubd_hits(a + 0x40, a + 0x50) && !ubd_hits(a + 0x100, a + 0x110) && !ubd_hits(a + 0x2000, a + 0x2010), "hits: the updated range, not another range of its page or another page");
+    CHECK(ubd_covers(a + 0x40, a + 0x50) && !ubd_covers(a + 0x40, a + 0x60), "covers: the updated range, not a wider one");
+    uint64_t s1 = ubd_shadow(a + 0x40, a + 0x50);
+    CHECK(s1 == g_ubd[0].gpu && ubd_shadow(a + 0x40, a + 0x50) == s1, "the shadow is the update itself, and the same while the list stays");
+    uint64_t ver = g_ubd_ver;
+    mtl_sub_update(v, a + 0x100, 16); mtl_sub_update(v, a + 0x50, 16); mtl_sub_update(v, a + 0x40, 16);
+    CHECK(g_ubd_ver == ver + 3, "every deferred update moves the list's version");
+    CHECK(ubd_hits(a + 0x100, a + 0x110), "a range that missed hits once an update reaches it");
+    CHECK(ubd_covers(a + 0x40, a + 0x60), "a range that was not covered is once a second update fills the rest");
+    uint64_t s2 = ubd_shadow(a + 0x40, a + 0x50);
+    CHECK(s2 != s1 && s2 == g_ubd[g_nubd - 1].gpu, "a newer update of the range is its shadow");
+    CHECK(ubd_hits(a + 0x40, a + 0x50) && ubd_covers(a + 0x40, a + 0x50), "the range hits and is covered before the landing");
+    ubd_land_compute();
+    CHECK(!g_nubd && g_ubd_ver > ver + 3 && !(g_ubd_bm[pg >> 6] >> (pg & 63) & 1), "the landing empties the list, moves its version and clears the page's bit");
+    CHECK(!ubd_hits(a + 0x40, a + 0x50), "after the landing the range does not hit");
+    CHECK(!ubd_covers(a + 0x40, a + 0x50), "after the landing the range is not covered");
+}
+
 int main(void) { @autoreleasepool {
     setenv("DM_NVN_TBDR", "0", 1);
     mtl_init();
@@ -78,6 +105,7 @@ int main(void) { @autoreleasepool {
         const uint32_t *got = made_shadow(other, 12);
         CHECK(!got || got[0] == 0xa6, "a slot collision refuses or shows the update"); commit_as_running(); }
 
+    window_case();
     pend_reset(); g_nubd = 0;
     printf("t_ubp_running: %d checks, %d failed\n", checks, failed); fflush(stdout);
     _exit(failed != 0);

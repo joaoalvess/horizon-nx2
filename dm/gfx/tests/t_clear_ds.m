@@ -17,7 +17,7 @@ int main(void) { @autoreleasepool {
     CHECK(reader != nil, "synthetic plane reader compiles");
     if (!reader) return 1;
     id<MTLCommandQueue> queue = [g_dev newCommandQueue];
-    struct { int mid; p_scissor sc; int depth, mask; const char *label; } cases[] = {
+    struct { int mid; p_scissor sc; int depth, mask; const char *label; int planes; } cases[] = {
         {0, {2,1,3,2}, 1, 0, "outside-pass scissored depth clear"},
         {0, {2,1,3,2}, 0, 255, "outside-pass scissored stencil clear"},
         {0, {0,0,8,8}, 0, 15, "outside-pass masked stencil clear"},
@@ -26,6 +26,8 @@ int main(void) { @autoreleasepool {
         {0, {2,1,0,2}, 1, 255, "empty scissor writes nothing"},
         {0, {-1,-1,3,3}, 1, 15, "negative scissor origin is clamped"},
         {0, {0,0,8,8}, 1, 255, "full clear remains a load action"},
+        {0, {0,0,8,8}, 1, 15, "outside-pass full depth clear with a masked stencil: depth by the load action, stencil by the triangle", 1},
+        {1, {0,0,8,8}, 1, 15, "inside-pass full depth clear with a masked stencil: both by the triangle", 2},
         {0, {0,0,8,8}, 0, 0, "new texture initialization zeros both planes"},
     };
     for (unsigned i=0; i<sizeof cases/sizeof *cases; i++) {
@@ -51,7 +53,19 @@ int main(void) { @autoreleasepool {
         ops.clear=(p_clear_ds){.depth=.25, .depth_mask=cases[i].depth, .stencil=0x3c, .stencil_mask=cases[i].mask};
         ops.end=(op_hdr){OP_END,sizeof(op_hdr)};
         int zero_init = i == sizeof cases/sizeof *cases - 1;
+        uint64_t load0 = g_bw_load;
         if (zero_init) tex_zero_fill(base); else mtl_exec((const uint8_t *)&ops);
+        if (cases[i].planes) {
+            const sd_att *dp = NULL, *sp = NULL;
+            for (int k = 0; k < g_nsd; k++) { if (g_sd[k].depth == 1) dp = &g_sd[k]; if (g_sd[k].depth == 2) sp = &g_sd[k]; }
+            CHECK(g_enc && dp && sp, "the clear's pass is open with both planes attached");
+            if (dp && sp) {
+                CHECK(cases[i].planes == 1 ? !dp->load && dp->wrote && !dp->rast : dp->load && dp->rast,
+                      cases[i].planes == 1 ? "outside a pass the depth plane takes the pass's clear load action and the triangle leaves it" : "inside a pass the triangle draws the depth plane");
+                CHECK(sp->load && sp->rast, "the stencil plane is loaded and drawn by the triangle");
+            }
+            if (cases[i].planes == 1) CHECK(g_bw_load - load0 == 8 * 8, "outside a pass only the stencil plane is loaded");
+        }
         mtl_sub_commit(); mtl_drain();
         CHECK(!mtl_last_commit_error(), "production clear completes without GPU error");
         id<MTLTexture> stencil = [base newTextureViewWithPixelFormat:MTLPixelFormatX32_Stencil8];
