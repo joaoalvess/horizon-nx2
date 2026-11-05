@@ -363,6 +363,12 @@ namespace Ryujinx.Graphics.Shader.Translation.Optimizations
 
                     offset = hostOffset;
                 }
+                else if (offset == null)
+                {
+                    offset = Local();
+
+                    node.List.AddBefore(node, new Operation(Instruction.Subtract, offset, globalAddress, Cbuf(result.SbCbSlot, result.SbCbOffset)));
+                }
                 else if (result.ConstOffset != 0)
                 {
                     Operand newOffset = Local();
@@ -1270,6 +1276,17 @@ namespace Ryujinx.Graphics.Shader.Translation.Optimizations
             src1 = operation.GetSource(0);
             src2 = operation.GetSource(1);
 
+            if (needsOffset && src1.Type == OperandType.LocalVariable && src2.Type == OperandType.LocalVariable)
+            {
+                SearchResult result1 = GetDriverBaseAddressCbOfAdd(block, src1);
+                SearchResult result2 = GetDriverBaseAddressCbOfAdd(block, src2);
+
+                if (result1.Found != result2.Found)
+                {
+                    return result1.Found ? result1 : result2;
+                }
+            }
+
             // If we have two possible results, we give preference to the ones from
             // the driver reserved constant buffer, as those are the ones that
             // contains the base address.
@@ -1337,6 +1354,21 @@ namespace Ryujinx.Graphics.Shader.Translation.Optimizations
             }
 
             return SearchResult.NotFound;
+        }
+
+        private static SearchResult GetDriverBaseAddressCbOfAdd(BasicBlock block, Operand value)
+        {
+            if (Utils.FindLastOperation(value, block).AsgOp is not Operation { Inst: Instruction.Add } operation)
+            {
+                return SearchResult.NotFound;
+            }
+
+            Operand src1 = operation.GetSource(0);
+            Operand src2 = operation.GetSource(1);
+            bool base1 = src1.Type == OperandType.ConstantBuffer && src1.GetCbufSlot() == DriverReservedCb;
+            bool base2 = src2.Type == OperandType.ConstantBuffer && src2.GetCbufSlot() == DriverReservedCb;
+
+            return base1 == base2 ? SearchResult.NotFound : GetBaseAddressCbWithOffset(base1 ? src1 : src2, null, 0);
         }
 
         private static bool TryGetMemoryOffsets(Operation operation, out LsMemoryType type, out Operand baseOffset, out int constOffset)

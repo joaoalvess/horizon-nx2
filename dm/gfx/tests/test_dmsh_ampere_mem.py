@@ -99,6 +99,11 @@ class Sured(Translated):
         with self.assertRaises(AssertionError) as e: self.translate(inst(0x000fe200001ee000, self.FORM[1]) + inst(*EXIT))
         self.assertIn('SURED form', str(e.exception))
 
+    def test_or_from_the_operation_field(self):   # SURED.OR.U32, word 2 0x0310e000 (The Legend of Zelda: Ocarina of Time's d17eefaff4f0bc23 +0x5040)
+        msl = self.translate(inst(0x000fe2000310e000, self.FORM[1]) + inst(*EXIT))
+        self.assertIn('atomic_fetch_or', msl)
+        self.assertNotIn('atomic_fetch_add', msl)
+
 
 class StageMemory(Translated):
     """A task or mesh shader's stage memory in shared memory, on the game's encodings (job stage_memory: workgroup 0, input 0x10, outputs 0x120, primitives 0x400)"""
@@ -122,6 +127,9 @@ class StageMemory(Translated):
 
     def test_input_is_at_its_offset(self):   # 0x10 + 0x20
         self.assertRegex(self.msl(self.INPUT, self.KEEP_R19), r'as_type<float>\(_\d+\[12\]\)')
+
+    def test_own_output_is_read_where_its_store_goes(self):   # ISBERD R19, [RZ + 0x10], mode 0xb8 (The Legend of Zelda: Ocarina of Time's task shader 5d3a096025e375a1): 0x120 + 0x10
+        self.assertRegex(self.msl((0x000fe2000000b800, 0x00001000ff137923), self.KEEP_R19), r'as_type<float>\(_\d+\[76\]\)')
 
     def test_word_store_goes_to_the_outputs(self):   # 0x120 + 0x80
         self.assertIn('0 + 416', self.msl(self.ATTRIBUTE))
@@ -189,11 +197,79 @@ class Shared(Translated):
         self.assertRegex(msl, r'= 5u;')
         self.assertRegex(msl, r', 9u,')
 
+    LDS_P0_BARRIER_0 = 0x000e220000000800, 0x00001000ff050984   # @P0 LDS.U32 R5, [RZ + 0x10], write barrier 0
+    MOV_NOT_P0 = 0x000fc60000000f00, 0x0000000700058802         # @!P0 MOV R5, 7
+    STS_AFTER_0 = 0x001fe80000000800, 0x0000200005ff7388        # STS.U32 [RZ + 0x20], R5, waiting on barrier 0
+
+    def test_a_false_guard_keeps_what_was_written_before_the_wait(self):   # the load's deferred write lands only where its guard held: R5 is 7 when P0 is false (R2 = 1)
+        msl = self.msl(mov(2, 1), mov(5, 3), inst(*self.ISETP_P0), inst(*self.LDS_P0_BARRIER_0), inst(*self.MOV_NOT_P0), inst(*self.STS_AFTER_0))
+        self.assertRegex(msl, r'_\d+ = 7;')
+
     # 3,312 of Pokemon Pokopia's shared accesses have stride 3, on 4, 8 and 16 bytes alike (cs_rdb 990's STS.U32 [R2 * 16]): the field is a scale, not the access size
     STS_SCALED_16 = 0x0001e4000000c800, 0x0000000302027388
 
     def test_stride_3_scales_its_register_by_16(self):   # Element 3 of 16 bytes, word 12
         self.assertIn('[12] = 77u', self.msl(mov(2, 3), mov(3, 77), inst(*self.STS_SCALED_16)))
+
+
+def f32(v): return struct.unpack('<I', struct.pack('<f', v))[0]
+
+
+class OcarinaOfTime(Translated):
+    """The Legend of Zelda: Ocarina of Time's compute encodings: F2IP.U8.F32 (agl_common's colour encoders), ATOMG.CAS (FoliageShader), HMMA.16816.F16 (the movie upscaler)"""
+    F2IP = (0x000fe200000004ff, 0x0000000201037243)        # F2IP.U8.F32 R3, R1, R2, RZ
+    ATOMG_CAS = (0x000ea400001ee109, 0x00000008020073a9)   # ATOMG.CAS R0, [R2.64], R8, R9 (c144d8f734fbe228 +0x8830)
+    HMMA = (0x000fe20000000810, 0x000000181c10723c)        # HMMA.16816.F16 R16, R28, R24, R16 (4f41ccf24f163e0d +0x15b0, no write barrier)
+    WAIT_STS = (0x03ffe80000000800, 0x0000200000ff7388)    # STS.U32 [RZ + 0x20], R0 after every barrier
+
+    def msl(self, *code):
+        msl = self.translate(b''.join(code) + inst(*EXIT), shared=0x400)
+        return msl[msl.index('kernel void'):]
+
+    def test_f2ip_packs_a_above_b(self):   # 300 saturates to 255 in bits 8..15, 17.5 rounds to the even 18 in bits 0..7
+        msl = self.msl(mov(1, f32(300.0)), mov(2, f32(17.5)), inst(*self.F2IP), sts(0x20, 3))
+        self.assertRegex(msl, r'rint\(300\.0\)[\s\S]*max\([\s\S]*min\([\s\S]*<< 8[\s\S]*rint\(17\.5\)')
+
+    def test_f2ip_of_another_form_is_refused(self):
+        with self.assertRaises(AssertionError) as e: self.msl(inst(0x000fe200000005ff, self.F2IP[1]), sts(0x20, 3))
+        self.assertIn('F2IP form', str(e.exception))
+
+    def test_atomg_cas_returns_the_old_value(self):
+        msl = self.msl(mov(2, 0x1000), mov(3, 0), mov(8, 0), mov(9, 7), inst(*self.ATOMG_CAS), inst(*self.WAIT_STS))
+        self.assertIn('atomic_compare_exchange', self.translate(mov(2, 0x1000) + mov(3, 0) + mov(8, 0) + mov(9, 7) + inst(*self.ATOMG_CAS) + inst(*self.WAIT_STS) + inst(*EXIT), shared=0x400))
+        self.assertNotRegex(msl, r'\? 1u? : 0u?')
+
+    def test_hmma_whose_second_result_is_overwritten_keeps_the_one_before(self):   # the second HMMA's C is the first's result; its d1 (R17) is written again unread, as at 4f41ccf24f163e0d +0x16c0
+        loads = [lds(r, 0xff, 4 * k) for k, r in enumerate((28, 29, 30, 31, 24, 25, 16, 17))]
+        msl = self.msl(*loads, inst(*self.HMMA), inst(*self.HMMA), sts(0x40, 16), mov(17, 5), sts(0x44, 17))
+        self.assertEqual(re.findall(r'dmsh_hmma16816_f16\w*\(', msl), ['dmsh_hmma16816_f16_768(', 'dmsh_hmma16816_f16_704('])
+
+    def ldsm(self, rd, offset, matrices, transposed):   # LDSM.16.M88 / .MT88 Rd, [RZ + offset], 1 << matrices matrices
+        return inst(0x000fe20000000000 | matrices << 8 | transposed << 14, offset << 40 | 0xff << 24 | rd << 16 | 0x783b)
+
+    def hmma(self, rd, ra, rb, rc):   # HMMA.16816.F16 Rd, Ra, Rb, Rc
+        return inst(0x000fe20000000800 | rc, rb << 32 | ra << 24 | rd << 16 | 0x723c)
+
+    def helpers(self, *code):
+        return re.findall(r'dmsh_hmma16816_f16\w*\(', self.msl(*code))
+
+    def test_a_chain_keeps_its_matrices_in_apples_layout(self):   # LDSM A and MT88 B fragments, C = 0, then D only as the next C: every word but the stored D (layouts 255)
+        code = self.ldsm(4, 0, 2, 0), self.ldsm(8, 0x100, 2, 1), self.hmma(16, 4, 8, 0xff), self.hmma(16, 4, 10, 16), sts(0x40, 16), sts(0x44, 17)
+        self.assertEqual(self.helpers(*code), ['dmsh_hmma16816_f16_1023(', 'dmsh_hmma16816_f16_255('])
+
+    def test_a_fragment_read_elsewhere_keeps_nvidias_layout(self):   # R4 (A0) also stored: A0 alone stays in NVIDIA's layout; the stored D too
+        code = self.ldsm(4, 0, 2, 0), self.ldsm(8, 0x100, 1, 1), self.hmma(16, 4, 8, 0xff), sts(0x40, 4), sts(0x48, 16), sts(0x4c, 17)
+        self.assertEqual(self.helpers(*code), ['dmsh_hmma16816_f16_254('])
+
+    def test_a_fragment_in_two_kinds_of_slot_keeps_nvidias_layout(self):   # R4, R5 are A0, A1 and B0, B1 of the same HMMA
+        code = self.ldsm(4, 0, 2, 0), self.hmma(16, 4, 4, 0xff), sts(0x48, 16), sts(0x4c, 17)
+        self.assertEqual(self.helpers(*code), ['dmsh_hmma16816_f16_204('])
+
+    def test_apples_layout_of_a_non_transposed_b_reads_columns(self):   # B from LDSM.M88 and A from .MT88: both gathered as two halves a matrix
+        code = self.ldsm(4, 0, 2, 1), self.ldsm(8, 0x100, 1, 0), self.hmma(16, 4, 8, 0xff), sts(0x48, 16), sts(0x4c, 17)
+        msl = self.msl(*code)
+        self.assertEqual(re.findall(r'dmsh_hmma16816_f16\w*\(', msl), ['dmsh_hmma16816_f16_255('])
+        self.assertEqual(len(re.findall(r'extract_bits\(', msl)), 12)
 
 
 class Pokopia(Translated):
@@ -411,6 +487,53 @@ class SharedPerInvocation(Translated):
 
     def test_within_the_limit_unchanged(self):   # 8 x 8 x 2 invocations, 18,944 bytes
         self.assertTrue(self.shared_read_or_written(self.msl(mov(3, 77), sts(8, 3, 2), lds(12, 2, 8), local=(8, 8, 2), shared=8 * 8 * 2 * 148)))
+
+
+class RawGlobalWriteLog(Translated):
+    """Stores through addresses read from memory go through the pool table, and set their table entry's bit in the write log. The Legend of Zelda: Ocarina of Time's title movie
+    network stores into far more pages than the 1,024 of the page set this replaced: every log ran out of slots, each store then made 8 failed compare-and-swaps"""
+    STG = (0x000fe20000000900, 0x0000000402007386)          # STG.E [R2.64], R4
+    STG_SECOND = (0x000fe20000000900, 0x0000000705007386)   # STG.E [R5.64], R7
+
+    def msl(self):
+        return self.translate(lds(2, 0xff, 0x10) + lds(3, 0xff, 0x14) + mov(4, 7) + inst(*self.STG) + lds(5, 0xff, 0x18) + lds(6, 0xff, 0x1c) + mov(7, 9) + inst(*self.STG_SECOND)
+                              + inst(*EXIT), shared=0x400)
+
+    def test_a_store_sets_its_entry_bit(self):
+        msl = self.msl()
+        self.assertRegex(msl, r'>> uint\(5\)\)\);[\s\S]*1 << \w+;\s*uint \w+ = atomic_fetch_or_explicit\(')
+        self.assertNotIn('atomic_compare_exchange', msl)
+
+    def test_a_thread_logs_an_entry_once(self):   # the last entry logged, 0 at the start (entry 0 is empty, never found), is passed to each store
+        msl = self.msl()
+        main = msl[msl.index('kernel void'):]
+        last = re.search(r'uint (_\d+) = 0u;', main).group(1)
+        self.assertEqual(len(re.findall(r', %s\);' % last, main)), 2)
+        self.assertRegex(msl, r'thread uint& (\w+)\)[\s\S]*as_type<float>\(\1\);\s*bool \w+ = \w+ != [\s\S]*\1 = uint\(\w+\);[\s\S]*atomic_fetch_or_explicit')
+
+
+class StorageSlotSum(Translated):
+    """An address that adds two registers, one of them a register plus a storage slot's address: (tid.x + c0[0x350]) + tid.y, the shape of every load and store of The Legend
+    of Zelda: Ocarina of Time's title movie network (d15370a382630d4e). It is that slot's storage buffer, at the address minus the slot's address, not a pool table search"""
+    LDG = (0x000fe20000000900, 0x0000000002047381)   # LDG.E R4, [R2.64]
+    STG = (0x000fe20000000900, 0x0000000402007386)   # STG.E [R2.64], R4
+
+    def iadd3(self, rd, ra, rb=None, cbuf=None):   # IADD3 Rd, Ra, Rb, RZ or IADD3 Rd, Ra, c[0x0][cbuf], RZ
+        lo = cbuf << 38 | 0xa10 if cbuf is not None else rb << 32 | 0x210
+        return inst(0x000fe20007ffe0ff, lo | ra << 24 | rd << 16 | 0x7000)
+
+    def msl(self, *address):   # slot 4's address at 0x50 of the shader's c0 (nvn2_cs: 5 storage slots from 0x10), which the translator reads as 0x350
+        code = s2r(0, TID_X) + s2r(1, TID_Y) + b''.join(address) + self.iadd3(3, 0xff, cbuf=0x54) + inst(*self.LDG) + sts(0x20, 4) + inst(*self.STG) + inst(*EXIT)
+        return self.translate(code, shared=0x400, nvn2_cs=[0, 5, 0, 0x60, 0])
+
+    def test_goes_to_the_slots_storage_buffer(self):
+        msl = self.msl(self.iadd3(2, 0, cbuf=0x50), self.iadd3(2, 2, 1))
+        self.assertNotIn('reinterpret_cast<device', msl)
+        self.assertEqual(len(re.findall(r'- as_type<int>\(\(\*spvDescriptorSet0\.cp_c0\)\._m0\[53\]\.x\)', msl)), 2)
+
+    def test_two_slot_addresses_in_the_sum_keep_the_search(self):   # (tid.x + c0[0x350]) + (tid.y + c0[0x310]): no single base
+        msl = self.msl(self.iadd3(2, 0, cbuf=0x50), self.iadd3(1, 1, cbuf=0x10), self.iadd3(2, 2, 1))
+        self.assertIn('reinterpret_cast<device', msl)
 
 
 if __name__ == '__main__':
