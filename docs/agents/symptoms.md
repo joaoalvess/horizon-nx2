@@ -294,6 +294,7 @@ One line per symptom in the [subsystem references](../reference/): what you see 
 - a movie with a Vorbis track plays its first seconds with sound; after the game flushes and restarts it (a seek, a loop, or the app losing and regaining focus) the picture goes on but the sound does not come back, for the rest of the movie. The log shows `[movie] Flush`, `Flush`, `Start`, `Start` and no more `GetOutputBuffer … → PCM` lines. With `DM_AUDIO_DUMP`, the game's mix is real audio up to the flush and exact zeros from then on, so the AudioUnit is not at fault (0 underruns). → [Vorbis sound stops for good after a Flush](../reference/movies.md#vorbis-sound-stops-for-good-after-a-flush)
 - a Switch 2 game crashes when a movie starts: `nn::codec::video::Initialize` faults in the SDK (Donkey Kong Bananza: `sdk+0x2de99c`, after its first punch, when the guide movie starts), and before that `nv::InitCheck` aborts (`hle_nv.c`). Later, when a second movie starts: `game called nn::diag abort: Result 0` in `nn::os::ClearSystemEvent` or `TryWaitSystemEvent` on the decoder's event. → [`nn::codec` video decoders taken over](../reference/movies.md#nncodec-video-decoders-taken-over)
 - a crash in `nn::codec::video::InitializeAv1DecoderByTransferMemory` when a movie starts. → [AV1 movies through SDK 22's decoder](../reference/movies.md#av1-movies-through-sdk-22s-decoder)
+- AV1 readback performs an NV12 → I420 → NV12 round trip on the CPU. → [Owned AV1 NV12 pictures](../reference/movies.md#owned-av1-nv12-pictures)
 
 ## Audio
 

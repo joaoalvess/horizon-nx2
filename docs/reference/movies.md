@@ -264,6 +264,14 @@ A decoder hands out as many outputs as it has slots, and while every slot is tak
 - **Check:** `make -C dm/host/tests GAME=<id> run` runs `t_codec_video` (AddressSanitizer and UBSan), which covers the AV1 and SDK 22 forms, native images and the av1C record, and decodes a 64x64 AV1 key frame (SVT-AV1) on each backend the Mac has, read back as NV12.
 - **Found on:** [Fire Emblem Fortune's Weave](../../dm/games/04007EF01F8AE000/README.md): 82 movies in WebM at 2560x1440; the opening's 3,301 pictures play. On #957's branch, VideoToolbox and dav1d gave the same pictures, bit for bit, over the opening's first 600 (about 450 pictures a second each on an M3 Pro), and a tester's M1 Pro played the first two movies through dav1d, smooth and in sync ([seedds/nxnative#927](https://github.com/seedds/nxnative/issues/927)).
 
+### Owned AV1 NV12 pictures
+
+- **Symptom:** AV1 readback performs an NV12 → I420 → NV12 round trip on the CPU.
+- **Cause:** `mav1_picture` borrows decoder planes that expire on the next decode, reset or destruction. The pool's ownership copy split UV into I420 even though NV12 readback immediately interleaved it again.
+- **Fix:** `av1_copy` keeps even-sized pictures in owned `VPX_IMG_FMT_NV12` storage, copying only visible rows with each source plane's stride and preserving the existing colour space/range mapping. Odd dimensions retain I420. The shared `md_nv12` and `md_rgba` helpers read either layout with the same top-left crop, black padding (Y=16, UV=128; opaque black RGBA) and colour arithmetic, including the existing BT.2020 behavior. Held/pool lifetimes and H.264 and backend APIs are unchanged.
+- **Check:** `make -C dm/host/tests GAME=010015100B514000 t_codec_video check_t_codec_video` uses ASan/UBSan. Patterned pictures compare byte-for-byte with the old I420 copy across unequal source strides, crop/pad sizes, contiguous/separate planes, output tails, matrix/range combinations and native RGBA row padding. AV1 lifecycle cases cover decoder reuse, release/replacement, queue backpressure, EOS, flush, decoder destruction and pool finalization. `check_t_codec_video_av1` runs the focused acceptance through dav1d without requiring the unrelated H.264 VideoToolbox session; the full check still requires all codecs.
+- **Open:** VideoToolbox AV1 acceptance on a supported Mac and in-game CPU/frame-time measurements. No speedup is measured by these byte comparisons.
+
 ## Movie players
 
 ### Unity's video planes and checking the movie path

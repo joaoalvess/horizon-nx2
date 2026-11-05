@@ -210,7 +210,7 @@ HLE_FORCE("_ZN2nn5codec26ReadDecoderOutputImageNv12EPKNS0_25VideoDecoderImagePoo
 }
 
 // One host decoder for every codec the SDK has a decoder type for (Vp8 / Vp9 / H264 / Av1DecoderType: the same layout, its event at +8 in the SDK, all calls taken over here):
-// VP8 and VP9 through libvpx, H.264 through VideoToolbox and AV1 through VideoToolbox or dav1d (hle_movie_avc.c, hle_movie_av1.c, whose NV12 pictures are copied into the pool as I420)
+// VP8 and VP9 through libvpx, H.264 through VideoToolbox and AV1 through VideoToolbox or dav1d (hle_movie_avc.c, hle_movie_av1.c); pool pictures own their storage
 static void cv_open(cv_dec *d) {   // (re)creates the codec state: a new stream starts at the next key frame
     if (d->codec == CV_AV1) {
         if (!d->av1) d->av1 = mav1_new(); else mav1_reset(d->av1);
@@ -299,13 +299,19 @@ static vpx_image_t *nv12_to_i420(const uint8_t *nv12, unsigned w, unsigned h) { 
         c->planes[2][(size_t)y * c->stride[2] + x] = uv[(size_t)y * w + 2 * x + 1]; }
     return c;
 }
-static vpx_image_t *av1_to_i420(const mav1_picture *p) {   // the decoder's NV12, rows at its strides, as the I420 the pool keeps
-    vpx_image_t *c = vpx_img_alloc(NULL, VPX_IMG_FMT_I420, (unsigned)p->w, (unsigned)p->h, 1); if (!c) return NULL;
+static vpx_image_t *av1_copy(const mav1_picture *p) {
+    // Decoder planes expire on decode/reset/free. Own visible NV12 rows instead of splitting UV only to rejoin it at readback; keep odd sizes on the existing I420 path.
+    int nv12 = !(p->w & 1) && !(p->h & 1);
+    vpx_image_t *c = vpx_img_alloc(NULL, nv12 ? VPX_IMG_FMT_NV12 : VPX_IMG_FMT_I420, (unsigned)p->w, (unsigned)p->h, 1); if (!c) return NULL;
     c->cs = p->matrix == 2 ? VPX_CS_BT_709 : p->matrix == 5 ? VPX_CS_BT_2020 : VPX_CS_BT_601; c->range = p->full_range ? VPX_CR_FULL_RANGE : VPX_CR_STUDIO_RANGE;
     for (int y = 0; y < p->h; y++) memcpy(c->planes[0] + (size_t)y * c->stride[0], p->y + (size_t)y * p->ystride, (size_t)p->w);
     for (int y = 0; y < (p->h + 1) / 2; y++) {
-        const uint8_t *uv = p->uv + (size_t)y * p->uvstride; uint8_t *u = c->planes[1] + (size_t)y * c->stride[1], *v = c->planes[2] + (size_t)y * c->stride[2];
-        for (int x = 0; x < (p->w + 1) / 2; x++) { u[x] = uv[2 * x]; v[x] = uv[2 * x + 1]; }
+        const uint8_t *uv = p->uv + (size_t)y * p->uvstride; uint8_t *u = c->planes[1] + (size_t)y * c->stride[1];
+        if (nv12) memcpy(u, uv, (size_t)p->w);
+        else {
+            uint8_t *v = c->planes[2] + (size_t)y * c->stride[2];
+            for (int x = 0; x < (p->w + 1) / 2; x++) { u[x] = uv[2 * x]; v[x] = uv[2 * x + 1]; }
+        }
     }
     return c;
 }
@@ -323,7 +329,7 @@ static Result cv_dec_submit(uint64_t *out, void *t, const void *data, uint64_t s
     } else if (d->codec == CV_AV1) {
         if (size) {
             mav1_picture pic;
-            if (mav1_decode(d->av1, data, (size_t)size, &pic) == 1) { vpx_image_t *c = av1_to_i420(&pic); if (c) got += cv_hold(d, c, ts); }
+            if (mav1_decode(d->av1, data, (size_t)size, &pic) == 1) { vpx_image_t *c = av1_copy(&pic); if (c) got += cv_hold(d, c, ts); }
         }
     } else if (size && d->vpx_ok) {
         if (vpx_codec_decode(&d->vpx, data, (unsigned)size, NULL, 0) != VPX_CODEC_OK) { static int n; if (n++ < 4) LOG("[RED] nn::codec %s: %s (%s)", k_cv_name[d->codec], vpx_codec_error(&d->vpx), vpx_codec_error_detail(&d->vpx) ? vpx_codec_error_detail(&d->vpx) : ""); }
