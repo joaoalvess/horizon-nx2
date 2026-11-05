@@ -108,7 +108,7 @@ Offline work:
 - the plan's open items, read in their code;
 - GPU micro-benchmarks of the shader helpers.
 
-Apple's simdgroup matrix layout was verified on the M4 only: run `dm/gfx/tests/test_dmsh_hmma.py` here before trusting any HMMA result on the M1.
+Apple's simdgroup matrix layout was verified on the M4 and, on 2026-11-05, on the M1 (`dm/gfx/tests/test_dmsh_hmma.py` HmmaOnGpu OK).
 
 ## Morning report
 
